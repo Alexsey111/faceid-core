@@ -1,0 +1,186 @@
+# embedding_repo.py - Репозиторий эмбеддингов
+
+import logging
+from typing import Optional
+
+import numpy as np
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
+
+from app.core.crypto import decrypt_vector, encrypt_vector
+from app.models.embedding import Embedding
+from app.models.user import User
+
+
+class EmbeddingRepository:
+    logger = logging.getLogger("EmbeddingRepository")
+
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def create_embedding(
+        self,
+        user_id: int,
+        embedding: np.ndarray | list[float]
+    ) -> Embedding:
+        """
+        Сохраняем:
+        - raw vector в pgvector для быстрого поиска
+        - encrypted_embedding для требований безопасности
+        """
+        vector = np.asarray(embedding, dtype=np.float32)
+
+        if vector.ndim != 1 or vector.shape[0] != 512:
+            raise ValueError("Embedding must be a 512-dim vector")
+
+        encrypted = encrypt_vector(vector)
+
+        record = Embedding(
+            user_id=user_id,
+            embedding=vector.tolist(),
+            encrypted_embedding=encrypted
+        )
+        self.db.add(record)
+        await self.db.flush()
+        await self.db.refresh(record)
+        await self.db.commit()
+
+        return record
+
+    def _decrypt_record_embedding(self, record: Embedding) -> np.ndarray | None:
+        encrypted = record.encrypted_embedding
+        if encrypted is None:
+            return None
+
+        try:
+            return decrypt_vector(encrypted)
+        except ValueError as exc:
+            self.logger.warning("Skipping embedding id=%s: %s", record.id, exc)
+            return None
+
+    async def find_top_k(
+        self,
+        embedding: np.ndarray,
+        k: int = 2
+    ) -> list[dict]:
+        """
+        Быстрый поиск через pgvector по raw embedding.
+        Возвращает top-k записей, по одной записи на эмбеддинг.
+        """
+        vector = np.asarray(embedding, dtype=np.float32)
+        if vector.ndim != 1 or vector.shape[0] != 512:
+            raise ValueError("Query embedding must be a 512-dim vector")
+
+        embedding_str = "[" + ",".join(str(float(x)) for x in vector) + "]"
+
+        query = text("""
+            SELECT
+                user_id,
+                1 - (embedding <=> CAST(:embedding AS vector)) AS similarity
+            FROM embeddings
+            WHERE embedding IS NOT NULL
+            ORDER BY embedding <=> CAST(:embedding AS vector)
+            LIMIT :k
+        """)
+
+        result = await self.db.execute(
+            query,
+            {
+                "embedding": embedding_str,
+                "k": k,
+            }
+        )
+        rows = result.fetchall()
+
+        return [
+            {
+                "user_id": row.user_id,
+                "similarity": float(row.similarity),
+            }
+            for row in rows
+        ]
+
+    async def get_by_user_id(self, user_id: int) -> list[Embedding]:
+        query = select(Embedding).where(Embedding.user_id == user_id)
+        result = await self.db.execute(query)
+        return list(result.scalars().all())
+
+    async def get_by_user(self, user_id: int) -> list[Embedding]:
+        return await self.get_by_user_id(user_id)
+
+    async def delete_by_user_id(self, user_id: int) -> int:
+        query = select(Embedding).where(Embedding.user_id == user_id)
+        result = await self.db.execute(query)
+        embeddings = result.scalars().all()
+
+        count = len(embeddings)
+        for emb in embeddings:
+            await self.db.delete(emb)
+        await self.db.commit()
+        return count
+
+    async def get_all_users_with_embeddings(self) -> list[User]:
+        query = select(User).options(selectinload(User.embeddings))
+        result = await self.db.execute(query)
+        return list(result.scalars().all())
+
+    async def get_user_vectors(self, user_id: int) -> list[np.ndarray]:
+        """
+        Для логики centroid в verification лучше использовать raw vector из БД.
+        Если raw отсутствует — fallback на decrypt.
+        """
+        query = select(Embedding).where(Embedding.user_id == user_id)
+        result = await self.db.execute(query)
+        rows = list(result.scalars().all())
+
+        vectors: list[np.ndarray] = []
+        for row in rows:
+            if row.embedding is not None:
+                vectors.append(np.asarray(row.embedding, dtype=np.float32))
+                continue
+
+            decrypted = self._decrypt_record_embedding(row)
+            if decrypted is not None:
+                vectors.append(decrypted)
+
+        return vectors
+
+    async def get_all_vectors(self) -> list[dict]:
+        """
+        Аварийный fallback для search service.
+        Предпочитаем raw embedding, иначе decrypt.
+        """
+        query = select(
+            Embedding.user_id,
+            Embedding.embedding,
+            Embedding.encrypted_embedding,
+            Embedding.id,
+        )
+        result = await self.db.execute(query)
+        rows = result.fetchall()
+
+        items: list[dict] = []
+        for row in rows:
+            if row.embedding is not None:
+                items.append({
+                    "user_id": row.user_id,
+                    "embedding": np.asarray(row.embedding, dtype=np.float32),
+                })
+                continue
+
+            if row.encrypted_embedding is None:
+                continue
+
+            try:
+                vector = decrypt_vector(row.encrypted_embedding)
+            except ValueError as exc:
+                self.logger.warning("Skipping row id=%s: %s", row.id, exc)
+                continue
+
+            items.append({
+                "user_id": row.user_id,
+                "embedding": vector,
+            })
+
+        return items

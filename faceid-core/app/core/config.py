@@ -1,0 +1,137 @@
+# app/core/config.py
+
+import base64
+
+from functools import lru_cache
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+
+    ENV: str = "development"
+
+    APP_NAME: str = "FaceID Core"
+    DEBUG: bool = False
+
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def parse_debug(cls, v):
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            return v.lower() not in ("false", "0", "no", "release")
+        return bool(v)
+
+    # -------------------------
+    # PostgreSQL
+    # -------------------------
+    POSTGRES_HOST: str = "postgres"
+    POSTGRES_PORT: int = 5432
+    POSTGRES_DB: str = "faceid"
+    POSTGRES_USER: str = "postgres"
+    POSTGRES_PASSWORD: str = "postgres"
+
+    # -------------------------
+    # Redis
+    # -------------------------
+    REDIS_HOST: str = "redis"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+
+    # -------------------------
+    # MinIO
+    # -------------------------
+    MINIO_ENDPOINT: str = "minio:9000"
+    MINIO_ACCESS_KEY: str = "minioadmin"
+    MINIO_SECRET_KEY: str = "minioadmin"
+    MINIO_BUCKET: str = "face-images"
+    MINIO_SECURE: bool = False
+
+    # -------------------------
+    # Models
+    # -------------------------
+    MODELS_DIR: str = "D:/python projects/faceid-core"
+
+    # -------------------------
+    # Search backend
+    # -------------------------
+    SEARCH_BACKEND: str = "pgvector"  # pgvector | faiss
+
+    # -------------------------
+    # FAISS
+    # -------------------------
+    FAISS_ENABLED: bool = False
+    FAISS_INDEX_PATH: str = "faiss.index"
+
+    # -------------------------
+    # Face verification thresholds
+    # -------------------------
+    FACE_MATCH_THRESHOLD: float = 0.7
+    FACE_LOW_THRESHOLD: float = 0.5
+    FACE_MARGIN_THRESHOLD: float = 0.05
+    LIVENESS_THRESHOLD: float = 0.7
+
+    # -------------------------
+    # Security
+    # -------------------------
+    SECRET_KEY: str = "fgLuHbGN6wiyxT-pfDqe6QBsP8nsf-KpZ3IzV-wCnn4="
+    AES_SECRET_KEY: str = "0123456789abcdef0123456789abcdef"
+    BIOMETRY_AES_KEY_B64: str | None = None
+
+    # -------------------------
+    # Celery
+    # -------------------------
+    CELERY_BROKER_URL: str = "redis://redis:6379/0"
+    CELERY_RESULT_BACKEND: str = "redis://redis:6379/0"
+
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # -------------------------
+    # Computed properties
+    # -------------------------
+
+    @property
+    def database_url(self) -> str:
+        return (
+            f"postgresql+psycopg2://"
+            f"{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+        )
+
+    @property
+    def async_database_url(self) -> str:
+        return (
+            f"postgresql+asyncpg://"
+            f"{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+        )
+
+    @property
+    def DATABASE_URL(self) -> str:
+        return self.database_url
+
+    @property
+    def redis_url(self) -> str:
+        return f"redis://{self.REDIS_HOST}:{self.REDIS_PORT}/{self.REDIS_DB}"
+
+    @property
+    def is_production(self) -> bool:
+        return self.ENV == "production"
+
+    @property
+    def aes_key(self) -> bytes:
+        key = self.BIOMETRY_AES_KEY_B64
+        if self.is_production and not key:
+            raise RuntimeError("AES key required in production")
+        if not key:
+            return b"0" * 32
+        return base64.b64decode(key)
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+
+settings = get_settings()
