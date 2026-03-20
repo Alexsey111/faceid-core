@@ -12,7 +12,7 @@ from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.core.config import settings
 from app.ml.pipeline_runtime import get_pipeline
 from app.ml.dependencies import reset_batch_encoder
-from app.services.faiss_loader import build_faiss_index
+from app.services.faiss_index import FaissIndex
 from app.services.search_service import SearchService
 from app.models.user import User  # noqa: F401
 from app.models.embedding import Embedding  # noqa: F401
@@ -45,7 +45,13 @@ async def lifespan(app: FastAPI):
     if settings.FAISS_ENABLED:
         async with AsyncSessionLocal() as session:
             repo = EmbeddingRepository(session)
-            index = await build_faiss_index(repo)
+
+            index = FaissIndex()
+
+            items = await repo.get_all_vectors()
+
+            index.rebuild(items)
+
             SearchService._faiss_index = index
 
     # Initialize ML pipeline

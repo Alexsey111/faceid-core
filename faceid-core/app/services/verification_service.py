@@ -78,7 +78,8 @@ class VerificationService:
 
             return {
                 "status": "processing_failed",
-                "liveness_passed": False
+                "liveness_passed": False,
+                "replay_detected": replay_detected
             }
 
         embedding: np.ndarray = result["embedding"]
@@ -126,7 +127,8 @@ class VerificationService:
                 "liveness": {
                     "score": liveness_score,
                     "risk": liveness_risk
-                }
+                },
+                "replay_detected": replay_detected
             }
 
         # VECTOR SEARCH (top-2 for margin calculation)
@@ -167,7 +169,8 @@ class VerificationService:
                     "pipeline": pipeline_time,
                     "search_ms": search_time,
                     "total_ms": total_time
-                }
+                },
+                "replay_detected": replay_detected
             }
 
         similarity = top1_similarity
@@ -215,7 +218,8 @@ class VerificationService:
                         "liveness": {
                             "score": liveness_score,
                             "risk": liveness_risk
-                        }
+                        },
+                        "replay_detected": replay_detected
                     }
 
         # Decision logic

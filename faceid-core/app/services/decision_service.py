@@ -10,9 +10,9 @@ class DecisionService:
     Централизованная логика принятия решения о верификации.
     """
 
-    HIGH_THRESHOLD = 0.55
-    LOW_THRESHOLD = 0.45
-    MARGIN_THRESHOLD = 0.1
+    HIGH_THRESHOLD = settings.HIGH_THRESHOLD
+    LOW_THRESHOLD = settings.LOW_THRESHOLD
+    MARGIN_THRESHOLD = getattr(settings, "MARGIN_THRESHOLD", 0.1)
 
     @staticmethod
     def decide(
@@ -37,7 +37,13 @@ class DecisionService:
         status = "no_match"
         confidence = "low"
 
-        if similarity >= DecisionService.HIGH_THRESHOLD and margin >= DecisionService.MARGIN_THRESHOLD:
+        effective_threshold = DecisionService.HIGH_THRESHOLD
+
+        # если margin плохой → повышаем требования
+        if margin < DecisionService.MARGIN_THRESHOLD:
+            effective_threshold += 0.05
+
+        if similarity >= effective_threshold and margin >= DecisionService.MARGIN_THRESHOLD:
             status = "match"
             confidence = "high"
         elif similarity >= DecisionService.LOW_THRESHOLD:
@@ -47,7 +53,20 @@ class DecisionService:
         # Liveness is only a signal, doesn't override status
         # (handled in verification_service via liveness_passed field)
 
+        confidence_score = similarity
+
+        # усиливаем/ослабляем confidence через margin
+        confidence_score += margin * 0.5
+
+        # clamp
+        confidence_score = max(0.0, min(1.0, confidence_score))
+
         return status, confidence
+
+    @staticmethod
+    def compute_confidence_score(similarity: float, margin: float) -> float:
+        score = similarity + margin * 0.5
+        return max(0.0, min(1.0, score))
 
     @staticmethod
     def check_liveness(liveness_score: float) -> bool:

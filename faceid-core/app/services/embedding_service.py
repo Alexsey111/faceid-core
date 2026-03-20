@@ -1,11 +1,12 @@
 # app/services/embedding_service.py - Сервис эмбеддингов
 
-import asyncio
 from typing import Dict, Any, Optional
+
 import numpy as np
 from app.ml.pipeline_runtime import get_pipeline
 from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.db.repositories.user_repo import UserRepository
+from app.tasks.faiss_tasks import add_embedding_task
 
 
 class EmbeddingService:
@@ -48,6 +49,13 @@ class EmbeddingService:
             user_id=internal_user_id,
             embedding=embedding
         )
+
+        try:
+            vector = np.asarray(embedding, dtype=np.float32)
+            add_embedding_task.delay(vector.tolist(), internal_user_id)
+        except Exception:
+            # не ломаем enroll
+            pass
 
         return {
             "embedding_id": record.id,

@@ -1,3 +1,5 @@
+# vfaceid-core\app\ml\embedding\arcface_encoder.py
+
 import numpy as np
 
 

@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     # PostgreSQL
     # -------------------------
     POSTGRES_HOST: str = "postgres"
+    DB_HOST: str = "localhost"
     POSTGRES_PORT: int = 5432
     POSTGRES_DB: str = "faceid"
     POSTGRES_USER: str = "postgres"
@@ -38,6 +39,7 @@ class Settings(BaseSettings):
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
+    REDIS_ENABLED: bool = False
 
     # -------------------------
     # MinIO
@@ -63,6 +65,7 @@ class Settings(BaseSettings):
     # -------------------------
     FAISS_ENABLED: bool = False
     FAISS_INDEX_PATH: str = "faiss.index"
+    FAISS_PERSIST_ENABLED: bool = True
 
     # -------------------------
     # Face verification thresholds
@@ -71,6 +74,8 @@ class Settings(BaseSettings):
     FACE_LOW_THRESHOLD: float = 0.5
     FACE_MARGIN_THRESHOLD: float = 0.05
     LIVENESS_THRESHOLD: float = 0.7
+    HIGH_THRESHOLD: float = 0.55
+    LOW_THRESHOLD: float = 0.45
 
     # -------------------------
     # Security

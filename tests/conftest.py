@@ -1,16 +1,22 @@
 # conftest.py - Конфигурация тестов
 
 import os
+
+# 🔴 СНАЧАЛА ENV!
+os.environ["POSTGRES_HOST"] = "localhost"
+os.environ["REDIS_HOST"] = "localhost"
+os.environ["MINIO_ENDPOINT"] = "localhost:9000"
+os.environ["DATABASE_URL"] = "postgresql+asyncpg://postgres:postgres@localhost:5432/postgres"
+
+from app.core.config import settings
+
+settings.FAISS_PERSIST_ENABLED = False
+
 import sys
 import asyncio
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
-
-# Переопределяем хосты ДО импорта приложения
-os.environ["POSTGRES_HOST"] = "localhost"
-os.environ["REDIS_HOST"] = "localhost"
-os.environ["MINIO_ENDPOINT"] = "localhost:9000"
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'faceid-core'))
 

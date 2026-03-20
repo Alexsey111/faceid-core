@@ -31,6 +31,12 @@ class EmbeddingRepository:
         """
         vector = np.asarray(embedding, dtype=np.float32)
 
+        norm = np.linalg.norm(vector)
+        if norm == 0.0:
+            raise ValueError("Invalid embedding vector")
+
+        vector = vector / norm
+
         if vector.ndim != 1 or vector.shape[0] != 512:
             raise ValueError("Embedding must be a 512-dim vector")
 
@@ -69,6 +75,12 @@ class EmbeddingRepository:
         Возвращает top-k записей, по одной записи на эмбеддинг.
         """
         vector = np.asarray(embedding, dtype=np.float32)
+
+        norm = np.linalg.norm(vector)
+        if norm == 0.0:
+            raise ValueError("Invalid embedding vector")
+
+        vector = vector / norm
         if vector.ndim != 1 or vector.shape[0] != 512:
             raise ValueError("Query embedding must be a 512-dim vector")
 
