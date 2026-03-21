@@ -16,6 +16,13 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 PROJECT_MODELS_DIR = PROJECT_ROOT / "models"
 
 
+def _make_session_options() -> ort.SessionOptions:
+    so = ort.SessionOptions()
+    so.intra_op_num_threads = 4
+    so.inter_op_num_threads = 1
+    return so
+
+
 def _detect_models_root() -> Path:
     """
     Determine the filesystem root that already contains the unzipped
@@ -48,6 +55,7 @@ def get_available_providers():
 def get_face_app() -> FaceAnalysis:
 
     providers = get_available_providers()
+    sess_options = _make_session_options()
 
     ctx_id = 0 if "CUDAExecutionProvider" in providers else -1
     root_dir = _detect_models_root()
@@ -56,7 +64,8 @@ def get_face_app() -> FaceAnalysis:
         app = FaceAnalysis(
             name="buffalo_l",
             root=str(root_dir),
-            providers=providers
+            providers=providers,
+            sess_options=sess_options,
         )
     except TypeError:
         app = FaceAnalysis(
@@ -81,9 +90,11 @@ def get_liveness_model():
         return None
 
     providers = get_available_providers()
+    sess_options = _make_session_options()
 
     session = ort.InferenceSession(
         str(model_path),
+        sess_options=sess_options,
         providers=providers
     )
 

@@ -1,16 +1,10 @@
 import numpy as np
 import pytest
-from pathlib import Path
-from typing import cast
 
-from app.ml.pipeline import FacePipeline
-from app.ml.pipeline_runtime import get_pipeline
-from app.services.verification_service import VerificationService
 from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.db.repositories.verification_repo import VerificationRepository
-
-
-DATA_DIR = Path(__file__).parent / "data"
+from app.ml.pipeline import FacePipeline
+from app.services.verification_service import VerificationService
 
 
 class DummyEmbeddingRepo(EmbeddingRepository):
@@ -26,51 +20,43 @@ class DummyVerificationRepo(VerificationRepository):
         pass
 
 
-@pytest.mark.asyncio
-async def test_empty_image_bytes():
-    pipeline = get_pipeline()
+def test_empty_image_bytes():
+    pipeline = FacePipeline()
 
     with pytest.raises(Exception):
-        await pipeline.process_async(b"")
+        pipeline.process(b"")
 
 
-@pytest.mark.asyncio
-async def test_invalid_image_bytes():
-    pipeline = get_pipeline()
-
-    invalid_bytes = b"not_an_image"
+def test_invalid_image_bytes():
+    pipeline = FacePipeline()
 
     with pytest.raises(Exception):
-        await pipeline.process_async(invalid_bytes)
+        pipeline.process(b"not_an_image")
 
 
-@pytest.mark.asyncio
-async def test_no_face_detected():
-    pipeline = get_pipeline()
-
-    # полностью чёрное изображение
+def test_no_face_detected():
+    pipeline = FacePipeline()
     blank = np.zeros((112, 112, 3), dtype=np.uint8).tobytes()
 
     with pytest.raises(Exception):
-        await pipeline.process_async(blank)
+        pipeline.process(blank)
 
 
 @pytest.mark.asyncio
 async def test_zero_embedding_handling():
     service = VerificationService(
-        embedding_repo=DummyEmbeddingRepo(None),  # type: ignore
-        verification_repo=DummyVerificationRepo(None),  # type: ignore
+        embedding_repo=DummyEmbeddingRepo(None),  # type: ignore[arg-type]
+        verification_repo=DummyVerificationRepo(None),  # type: ignore[arg-type]
     )
 
-    # подменим pipeline
     class FakePipeline:
-        async def process_async(self, *args, **kwargs):
+        def process(self, *args, **kwargs):
             return {
                 "embedding": np.zeros(512, dtype=np.float32),
-                "liveness": {}
+                "liveness": {},
             }
 
-    service.pipeline = cast(FacePipeline, FakePipeline())
+    service.pipeline = FakePipeline()
 
     result = await service.verify_face(b"fake")
 
@@ -81,8 +67,8 @@ async def test_zero_embedding_handling():
 @pytest.mark.asyncio
 async def test_corrupted_image_does_not_crash_service():
     service = VerificationService(
-        embedding_repo=DummyEmbeddingRepo(None),  # type: ignore
-        verification_repo=DummyVerificationRepo(None),  # type: ignore
+        embedding_repo=DummyEmbeddingRepo(None),  # type: ignore[arg-type]
+        verification_repo=DummyVerificationRepo(None),  # type: ignore[arg-type]
     )
 
     result = await service.verify_face(b"corrupted_data")

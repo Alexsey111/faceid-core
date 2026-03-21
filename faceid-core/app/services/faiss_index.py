@@ -22,6 +22,7 @@ class FaissIndex:
         if hasattr(faiss, "omp_set_num_threads"):  # type: ignore[attr-defined]
             faiss.omp_set_num_threads(2)
         self.user_ids: List[int] = []
+        self._seen = set()
 
         if getattr(settings, "FAISS_PERSIST_ENABLED", True):
             self._load()
@@ -51,9 +52,13 @@ class FaissIndex:
 
         vector = vector.astype("float32").reshape(1, -1)
         faiss.normalize_L2(vector)
+        key = (user_id, vector.tobytes())
+        if key in self._seen:
+            return
 
         self.index.add(vector)
         self.user_ids.append(user_id)
+        self._seen.add(key)
 
         self._save()
 
@@ -63,6 +68,7 @@ class FaissIndex:
         """
         self.index = faiss.IndexFlatIP(self.dim)
         self.user_ids = []
+        self._seen = set()
 
     def rebuild(self, items: List[Dict]):
         """
@@ -101,6 +107,10 @@ class FaissIndex:
         self.reset()
         self.index.add(matrix)
         self.user_ids = user_ids
+        self._seen = {
+            (uid, matrix[i].tobytes())
+            for i, uid in enumerate(user_ids)
+        }
 
         self._save()
 

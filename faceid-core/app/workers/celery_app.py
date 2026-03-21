@@ -18,3 +18,11 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
 )
+
+celery_app.conf.task_routes = {
+    "app.workers.tasks.*": {"queue": "faceid"}
+}
+celery_app.conf.update(
+    task_time_limit=25,
+    task_soft_time_limit=15,
+)

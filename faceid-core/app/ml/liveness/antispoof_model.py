@@ -8,12 +8,21 @@ import numpy as np
 import onnxruntime as ort
 
 
+def _make_session_options() -> ort.SessionOptions:
+    so = ort.SessionOptions()
+    so.intra_op_num_threads = 4
+    so.inter_op_num_threads = 1
+    return so
+
+
 class AntiSpoofModel:
 
     def __init__(self, model_path: str):
+        sess_options = _make_session_options()
 
         self.session = ort.InferenceSession(
             model_path,
+            sess_options=sess_options,
             providers=["CPUExecutionProvider"]
         )
 

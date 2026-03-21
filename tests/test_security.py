@@ -1,8 +1,5 @@
 import numpy as np
 import pytest
-from typing import cast
-
-from app.ml.pipeline import FacePipeline
 from app.services.verification_service import VerificationService
 from app.services.anti_replay_service import AntiReplayService
 from app.services.liveness_service import LivenessService
@@ -53,13 +50,13 @@ async def test_liveness_blocks_spoof_when_required():
 
     # фейковый pipeline
     class FakePipeline:
-        async def process_async(self, *args, **kwargs):
+        def process(self, *args, **kwargs):
             return {
                 "embedding": np.random.rand(512).astype(np.float32),
                 "liveness": {"score": 0.1}  # низкий score
             }
 
-    service.pipeline = cast(FacePipeline, FakePipeline())
+    service.pipeline = FakePipeline()
 
     result = await service.verify_face(
         b"fake",
@@ -78,13 +75,13 @@ async def test_liveness_not_required_allows_flow():
     )
 
     class FakePipeline:
-        async def process_async(self, *args, **kwargs):
+        def process(self, *args, **kwargs):
             return {
                 "embedding": np.random.rand(512).astype(np.float32),
                 "liveness": {"score": 0.1}
             }
 
-    service.pipeline = cast(FacePipeline, FakePipeline())
+    service.pipeline = FakePipeline()
 
     result = await service.verify_face(
         b"fake",

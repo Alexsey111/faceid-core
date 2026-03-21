@@ -39,7 +39,7 @@ class Settings(BaseSettings):
     REDIS_HOST: str = "redis"
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
-    REDIS_ENABLED: bool = False
+    REDIS_ENABLED: bool = True
 
     # -------------------------
     # MinIO
@@ -63,7 +63,7 @@ class Settings(BaseSettings):
     # -------------------------
     # FAISS
     # -------------------------
-    FAISS_ENABLED: bool = False
+    FAISS_ENABLED: bool = True
     FAISS_INDEX_PATH: str = "faiss.index"
     FAISS_PERSIST_ENABLED: bool = True
 

@@ -1,23 +1,73 @@
 # app/services/verification_service.py - Сервис верификации
 
-import asyncio
 import logging
 from typing import Dict, Any, Optional
 import numpy as np
 import time
 
-from app.ml.pipeline_runtime import get_pipeline
+from app.ml.pipeline import FacePipeline
 from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.db.repositories.verification_repo import VerificationRepository
 from app.services.decision_service import DecisionService
 from app.services.liveness_service import LivenessService
 from app.services.anti_replay_service import AntiReplayService
 from app.services.search_service import SearchService
+try:
+    from app.monitoring.metrics import (
+        VERIFY_LATENCY,
+        VERIFY_RESULT_COUNTER,
+        LIVENESS_RESULT_COUNTER,
+        PIPELINE_STAGE_DURATION,
+    )
+    METRICS_ENABLED = True
+except Exception:
+    METRICS_ENABLED = False
 
-MATCH_THRESHOLD = 0.7  # minimal similarity threshold для уверенного совпадения
+THRESHOLD = 0.35  # minimal similarity threshold для уверенного совпадения
 LOW_CONFIDENCE_THRESHOLD = 0.5  # нижний порог для режима low_confidence
-
 logger = logging.getLogger("verification")
+
+
+def _metric_bool(value: Optional[bool]) -> str:
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    return "none"
+
+
+def _observe_stage(stage: str, duration_ms: float) -> None:
+    if METRICS_ENABLED:
+        try:
+            PIPELINE_STAGE_DURATION.labels(stage=stage).observe(duration_ms)
+        except Exception:
+            pass
+
+
+def _observe_verify_latency(start_time: float) -> None:
+    if METRICS_ENABLED:
+        try:
+            latency = (time.time() - start_time) * 1000
+            VERIFY_LATENCY.observe(latency)
+        except Exception:
+            pass
+
+
+def _record_verify_result(result: str) -> None:
+    if METRICS_ENABLED:
+        try:
+            VERIFY_RESULT_COUNTER.labels(result=result).inc()
+        except Exception:
+            pass
+
+
+def _record_liveness_result(passed: Optional[bool]) -> None:
+    if METRICS_ENABLED:
+        try:
+            value = _metric_bool(passed)
+            LIVENESS_RESULT_COUNTER.labels(result=value).inc()
+        except Exception:
+            pass
 
 
 class VerificationService:
@@ -26,12 +76,15 @@ class VerificationService:
         self,
         embedding_repo: EmbeddingRepository,
         verification_repo: VerificationRepository,
+        search_service: SearchService | None = None,
+        pipeline: Any | None = None,
     ):
         self.embedding_repo = embedding_repo
         self.verification_repo = verification_repo
-        self.pipeline = get_pipeline()  # ок, но...
-        print("PIPELINE USED")
-        self.search_service = SearchService(embedding_repo)
+        self.pipeline = pipeline if pipeline is not None else FacePipeline()
+        self.search_service = (
+            search_service if search_service is not None else SearchService(embedding_repo)
+        )
 
     async def verify_face(
         self,
@@ -40,8 +93,25 @@ class VerificationService:
         require_liveness: bool = False,
         check_replay: bool = True
     ) -> Dict[str, Any]:
+        return await self._verify_face_impl(
+            image_bytes=image_bytes,
+            user_id=user_id,
+            require_liveness=require_liveness,
+            check_replay=check_replay,
+        )
+
+    async def _verify_face_impl(
+        self,
+        image_bytes: bytes,
+        user_id: Optional[str] = None,
+        require_liveness: bool = False,
+        check_replay: bool = True
+    ) -> Dict[str, Any]:
 
         t_start = time.time()
+
+        def record_result(status: str, liveness_passed: Optional[bool]) -> None:
+            return
 
         # Convert user_id to int or None
         try:
@@ -63,7 +133,7 @@ class VerificationService:
         )
 
         try:
-            result = await self.pipeline.process_async(image_bytes)
+            result = self.pipeline.process(image_bytes)
         except Exception as e:
             logger.exception("pipeline_failed", extra={"error": str(e)})
 
@@ -75,6 +145,9 @@ class VerificationService:
                 liveness_score=None,
                 is_genuine=None
             )
+            record_result("processing_failed", False)
+            _record_verify_result("processing_failed")
+            _observe_verify_latency(t_start)
 
             return {
                 "status": "processing_failed",
@@ -86,6 +159,9 @@ class VerificationService:
         embedding = np.asarray(embedding, dtype=np.float32)
         norm = np.linalg.norm(embedding)
         if norm == 0.0:
+            record_result("no_match", None)
+            _record_verify_result("no_match")
+            _observe_verify_latency(t_start)
             return {
                 "status": "no_match",
                 "similarity": 0.0,
@@ -95,6 +171,15 @@ class VerificationService:
         embedding = embedding / norm
         liveness_signals: Dict[str, Any] = result.get("liveness", {})
         pipeline_time = result.get("timings", {})
+
+        if "total_pipeline_ms" in pipeline_time:
+            _observe_stage("pipeline", float(pipeline_time["total_pipeline_ms"]))
+        if "detect_ms" in pipeline_time:
+            _observe_stage("detect", float(pipeline_time["detect_ms"]))
+        if "encode_ms" in pipeline_time:
+            _observe_stage("embed", float(pipeline_time["encode_ms"]))
+        if "liveness_ms" in pipeline_time:
+            _observe_stage("liveness", float(pipeline_time["liveness_ms"]))
 
         logger.info(
             "pipeline_completed",
@@ -120,6 +205,10 @@ class VerificationService:
                 liveness_score=liveness_score,
                 is_genuine=None
             )
+            record_result("spoof_detected", False)
+            _record_verify_result("spoof_detected")
+            _record_liveness_result(False)
+            _observe_verify_latency(t_start)
 
             return {
                 "status": "spoof_detected",
@@ -135,6 +224,7 @@ class VerificationService:
         t0 = time.time()
         top_k = await self.search_service.search_top_k(embedding, k=2)
         search_time = (time.time() - t0) * 1000
+        _observe_stage("search", search_time)
 
         top1_similarity = top_k[0]["similarity"] if top_k else 0.0
         top2_similarity = top_k[1]["similarity"] if len(top_k) > 1 else 0.0
@@ -161,6 +251,7 @@ class VerificationService:
                     "total_ms": total_time
                 }
             )
+            record_result("no_match", liveness_passed)
             return {
                 "status": "no_match",
                 "similarity": 0.0,
@@ -212,6 +303,7 @@ class VerificationService:
                         liveness_score=liveness_score,
                         is_genuine=is_genuine
                     )
+                    record_result("no_match", liveness_passed)
                     return {
                         "status": "no_match",
                         "liveness_passed": liveness_passed,
@@ -224,20 +316,26 @@ class VerificationService:
 
         # Decision logic
         best_score = similarity
-        status, confidence = DecisionService.decide(
-            similarity=similarity,
-            margin=margin,
-            liveness_score=liveness_score
-        )
-        if best_score >= MATCH_THRESHOLD:
+        # binary decision for match
+        is_match = similarity >= THRESHOLD
+
+        # extended status
+        if is_match:
             status = "match"
             confidence = "high"
-        elif best_score >= LOW_CONFIDENCE_THRESHOLD:
-            status = "low_confidence"
-            confidence = "medium"
         else:
-            status = "no_match"
-            confidence = "low"
+            confidence_score = (
+                similarity * 0.7
+                + margin * 0.2
+                + liveness_score * 0.1
+            )
+
+            if confidence_score >= 0.6:
+                status = "low_confidence"
+                confidence = "medium"
+            else:
+                status = "no_match"
+                confidence = "low"
 
         await self.verification_repo.create_log(
             user_id=top_k[0]["user_id"] if top_k else None,
@@ -246,8 +344,6 @@ class VerificationService:
             liveness_score=liveness_score,
             success=(status == "match")
         )
-
-        total_time = (time.time() - t_start) * 1000
 
         total_time = (time.time() - t_start) * 1000
         logger.info(
@@ -260,6 +356,10 @@ class VerificationService:
                 "total_ms": total_time
             }
         )
+        record_result(status, liveness_passed)
+        _record_verify_result(status)
+        _record_liveness_result(liveness_passed)
+        _observe_verify_latency(t_start)
 
         return {
             "status": status,

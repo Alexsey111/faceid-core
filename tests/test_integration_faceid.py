@@ -2,7 +2,9 @@ import pytest
 from pathlib import Path
 from httpx import AsyncClient, ASGITransport
 
+from app.core.config import settings
 from app.main import app
+from app.services.search_service import SearchService
 
 # Path to test image
 TEST_IMAGE = Path(__file__).parent / "images" / "person1.jpg"
@@ -14,6 +16,9 @@ if not TEST_IMAGE.exists():
 
 @pytest.mark.asyncio
 async def test_enroll_and_verify():
+    settings.FAISS_ENABLED = False
+    settings.REDIS_ENABLED = False
+    SearchService._faiss_index = None
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

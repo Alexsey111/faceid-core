@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Dict, Union, cast
+from typing import TYPE_CHECKING, List, Dict, cast
 
 import hashlib
 import json
 import redis
-import time
 import numpy as np
 
 from app.core.config import settings
-from app.core.metrics import metrics
+from app.monitoring.metrics import (
+    FAISS_HIT,
+    REDIS_HIT,
+    DB_FALLBACK,
+    ERROR_COUNTER,
+    SEARCH_BACKEND_COUNTER,
+    SEARCH_LATENCY,
+)
 from app.services.faiss_index import FaissIndex
 
 if TYPE_CHECKING:
@@ -31,24 +37,22 @@ class SearchService:
     def __init__(self, embedding_repo: "EmbeddingRepository"):
         self.embedding_repo = embedding_repo
         self._redis = None
+
         if settings.FAISS_ENABLED and SearchService._faiss_index is None:
             SearchService._faiss_index = FaissIndex()
+
         if getattr(settings, "REDIS_ENABLED", False):
-            try:
-                self._redis = redis.Redis(
-                    host=getattr(settings, "REDIS_HOST", "localhost"),
-                    port=getattr(settings, "REDIS_PORT", 6379),
-                    decode_responses=True
-                )
-            except Exception:
-                self._redis = None
+            self._redis = redis.Redis(
+                host=getattr(settings, "REDIS_HOST", "localhost"),
+                port=getattr(settings, "REDIS_PORT", 6379),
+                decode_responses=True,
+            )
 
     def add_embedding(self, vector: np.ndarray, user_id: int) -> None:
-        if settings.FAISS_ENABLED and SearchService._faiss_index:
+        if settings.FAISS_ENABLED and SearchService._faiss_index is not None:
             try:
                 SearchService._faiss_index.add_one(vector, user_id)
             except Exception:
-                # Не ломаем основной поток enroll
                 pass
 
     async def search_top_k(
@@ -56,105 +60,142 @@ class SearchService:
         embedding: np.ndarray,
         k: int = 2
     ) -> List[Dict]:
-        start = time.time()
-        try:
-            query = np.asarray(embedding, dtype=np.float32)
+        with SEARCH_LATENCY.time():
+            try:
+                sim_threshold = getattr(settings, "SIM_THRESHOLD", 0.5)
+                query = np.asarray(embedding, dtype=np.float32)
+                norm = np.linalg.norm(query)
+                if norm != 0.0:
+                    query = query / norm
 
-            norm = np.linalg.norm(query)
-            if norm != 0.0:
-                query = query / norm
+                def filter_results(results: List[Dict]) -> List[Dict]:
+                    return [
+                        r for r in results
+                        if r.get("similarity", 0.0) >= sim_threshold
+                    ]
 
-            cache_key = None
-            if self._redis:
-                try:
-                    cache_key = f"faceid:search:{self._hash_embedding(query)}:{k}"
-                    cached = self._redis.get(cache_key)
-                    if cached:
-                        cached_value = cast(Union[str, bytes, bytearray], cached)
-                        if isinstance(cached_value, bytes):
-                            cached_str = cached_value.decode()
-                        else:
-                            cached_str = cached_value
-                        metrics.inc("redis_hit")
-                        return json.loads(cached_str)
-                except Exception:
-                    metrics.inc("search_errors")
-                    pass
-
-            # 1. FAISS fast path
-            if settings.FAISS_ENABLED and SearchService._faiss_index:
-                try:
-                    results = SearchService._faiss_index.search(query, k)
-                    if results:
-                        if self._redis and cache_key:
-                            try:
-                                self._redis.setex(cache_key, 3600, json.dumps(results))
-                            except Exception:
-                                pass
-                        metrics.inc("faiss_hit")
-                        return results
-                except Exception:
-                    metrics.inc("search_errors")
-                    pass
-
-            # 2. pgvector fast path
-            if hasattr(self.embedding_repo, "find_top_k"):
-                try:
-                    results = await self.embedding_repo.find_top_k(query, k=k)
-                    if results:
-                        if self._redis and cache_key:
-                            try:
-                                self._redis.setex(cache_key, 3600, json.dumps(results))
-                            except Exception:
-                                pass
-                        metrics.inc("db_fallback")
-                        return results
-                except Exception:
-                    metrics.inc("search_errors")
-                    pass
-
-            # 3. CPU fallback
-            if hasattr(self.embedding_repo, "get_all_vectors"):
-                items = await self.embedding_repo.get_all_vectors()
-                if not items:
-                    return []
-
-                query_norm = np.linalg.norm(query)
-                if query_norm == 0.0:
-                    return []
-
-                scored: list[dict] = []
-                for item in items:
-                    vector = np.asarray(item["embedding"], dtype=np.float32)
-                    norm = np.linalg.norm(vector)
-                    if norm == 0.0:
-                        continue
-
-                    similarity = float(np.dot(query, vector) / (query_norm * norm))
-                    scored.append({
-                        "user_id": item["user_id"],
-                        "similarity": similarity,
-                    })
-
-                scored.sort(key=lambda x: x["similarity"], reverse=True)
-                result = scored[:k]
-                metrics.inc("db_fallback")
-                if result and self._redis and cache_key:
+                cache_key = None
+                if self._redis is not None:
                     try:
-                        self._redis.setex(cache_key, 3600, json.dumps(result))
-                    except Exception:
-                        pass
-                return result
+                        cache_key = f"faceid:search:{self._hash_embedding(query)}:{k}"
+                        cached = self._redis.get(cache_key)
+                        if cached is not None:
+                            REDIS_HIT.labels(
+                                endpoint="search_top_k",
+                                result="hit",
+                            ).inc()
+                            SEARCH_BACKEND_COUNTER.labels(backend="redis").inc()
+                            return json.loads(cast(str, cached))
+                    except Exception as exc:
+                        ERROR_COUNTER.labels(
+                            stage="redis_cache",
+                            error_type=type(exc).__name__,
+                        ).inc()
 
-            return []
-        finally:
-            metrics.observe("search_latency", time.time() - start)
+                if settings.FAISS_ENABLED and SearchService._faiss_index is not None:
+                    try:
+                        results = SearchService._faiss_index.search(query, k)
+                        if results:
+                            if self._redis is not None and cache_key is not None:
+                                try:
+                                    self._redis.setex(cache_key, 3600, json.dumps(results))
+                                except Exception:
+                                    pass
+                            FAISS_HIT.labels(
+                                endpoint="search_top_k",
+                                result="hit",
+                            ).inc()
+                            SEARCH_BACKEND_COUNTER.labels(backend="faiss").inc()
+                            filtered = filter_results(results)
+                            if filtered:
+                                return filtered
+                    except Exception as exc:
+                        ERROR_COUNTER.labels(
+                            stage="faiss_search",
+                            error_type=type(exc).__name__,
+                        ).inc()
+
+                if hasattr(self.embedding_repo, "find_top_k"):
+                    try:
+                        results = await self.embedding_repo.find_top_k(query, k=k)
+                        if results:
+                            if self._redis is not None and cache_key is not None:
+                                try:
+                                    self._redis.setex(cache_key, 3600, json.dumps(results))
+                                except Exception:
+                                    pass
+                            DB_FALLBACK.labels(
+                                endpoint="search_top_k",
+                                result="fallback",
+                            ).inc()
+                            SEARCH_BACKEND_COUNTER.labels(backend="db").inc()
+                            if results:
+                                return results
+                    except Exception as exc:
+                        ERROR_COUNTER.labels(
+                            stage="db_search",
+                            error_type=type(exc).__name__,
+                        ).inc()
+
+                if hasattr(self.embedding_repo, "get_all_vectors"):
+                    items = await self.embedding_repo.get_all_vectors()
+                    if not items:
+                        return []
+
+                    scored: list[dict] = []
+                    for item in items:
+                        vector = np.asarray(item["embedding"], dtype=np.float32)
+                        v_norm = np.linalg.norm(vector)
+                        if v_norm == 0.0:
+                            continue
+
+                        vector = vector / v_norm
+                        similarity = float(np.dot(query, vector))
+                        scored.append({
+                            "user_id": item["user_id"],
+                            "similarity": similarity,
+                        })
+
+                    scored.sort(key=lambda x: x["similarity"], reverse=True)
+                    result = scored[:k]
+
+                    DB_FALLBACK.labels(
+                        endpoint="search_top_k",
+                        result="fallback",
+                    ).inc()
+                    SEARCH_BACKEND_COUNTER.labels(backend="db").inc()
+
+                    if result and self._redis is not None and cache_key is not None:
+                        try:
+                            self._redis.setex(cache_key, 3600, json.dumps(result))
+                        except Exception:
+                            pass
+
+                    return result
+
+                return []
+
+            except Exception as exc:
+                ERROR_COUNTER.labels(
+                    stage="search_top_k",
+                    error_type=type(exc).__name__,
+                ).inc()
+                return []
 
     def _hash_embedding(self, embedding: np.ndarray) -> str:
-        return hashlib.sha256(embedding.tobytes()).hexdigest()
+        rounded = np.round(embedding, 5)
+        return hashlib.sha256(rounded.tobytes()).hexdigest()
 
-    async def search_user_embeddings(
-        self,
-        user_id: int
-    ):
+    async def invalidate_cache(self, user_id: int | None = None) -> None:
+        if self._redis is None:
+            return
+
+        try:
+            keys = list(self._redis.scan_iter("faceid:search:*"))
+            if keys:
+                self._redis.delete(*keys)
+        except Exception:
+            pass
+
+    async def search_user_embeddings(self, user_id: int):
         return await self.embedding_repo.get_user_vectors(user_id)

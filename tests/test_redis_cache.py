@@ -43,6 +43,7 @@ def norm(v):
 @pytest.mark.asyncio
 async def test_cache_hit():
     settings.REDIS_ENABLED = True
+    settings.FAISS_ENABLED = False
 
     repo = DummyRepo()
     service = SearchService(cast(EmbeddingRepository, repo))
@@ -62,6 +63,7 @@ async def test_cache_hit():
 @pytest.mark.asyncio
 async def test_cache_key_stability():
     settings.REDIS_ENABLED = True
+    settings.FAISS_ENABLED = False
 
     repo = DummyRepo()
     service = SearchService(cast(EmbeddingRepository, repo))
@@ -78,6 +80,7 @@ async def test_cache_key_stability():
 @pytest.mark.asyncio
 async def test_cache_different_queries():
     settings.REDIS_ENABLED = True
+    settings.FAISS_ENABLED = False
 
     repo = DummyRepo()
     service = SearchService(cast(EmbeddingRepository, repo))
@@ -96,6 +99,7 @@ async def test_cache_different_queries():
 @pytest.mark.asyncio
 async def test_cache_disabled():
     settings.REDIS_ENABLED = False
+    settings.FAISS_ENABLED = False
 
     repo = DummyRepo()
     service = SearchService(cast(EmbeddingRepository, repo))
@@ -111,6 +115,7 @@ async def test_cache_disabled():
 @pytest.mark.asyncio
 async def test_redis_failure_does_not_break_search():
     settings.REDIS_ENABLED = True
+    settings.FAISS_ENABLED = False
 
     repo = DummyRepo()
     service = SearchService(cast(EmbeddingRepository, repo))

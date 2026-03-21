@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from typing import Dict, Any, Optional
+import os
 import cv2
 import numpy as np
 import time
@@ -16,6 +17,7 @@ from app.ml.embedding.arcface_encoder import ArcFaceEncoder
 class FacePipeline:
 
     def __init__(self):
+        print(f"PID={os.getpid()} pipeline created")
         self._initialized = False
 
         # Lightweight, init immediately
@@ -95,15 +97,6 @@ class FacePipeline:
             },
             "timings": timings
         }
-
-    async def process_async(self, image_bytes: bytes) -> Dict[str, Any]:
-        import asyncio
-
-        loop = asyncio.get_event_loop()
-        from app.ml.pipeline_runtime import _executor, _semaphore
-
-        async with _semaphore:
-            return await loop.run_in_executor(_executor, self.process, image_bytes)
 
     def _texture_analysis(self, face_crop: np.ndarray) -> float:
         """

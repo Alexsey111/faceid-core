@@ -2,6 +2,7 @@
 
 from minio import Minio
 from minio.error import S3Error
+
 from app.core.config import settings
 
 
@@ -20,15 +21,12 @@ class MinioClient:
         self._ensure_bucket()
 
     def _ensure_bucket(self):
-        """Создает bucket если его нет"""
         found = self.client.bucket_exists(self.bucket)
 
         if not found:
             self.client.make_bucket(self.bucket)
 
-    def upload_image(self, object_name: str, data: bytes):
-        """Загрузка изображения"""
-
+    def upload_image(self, object_name: str, data: bytes, content_type: str = "image/jpeg"):
         from io import BytesIO
 
         try:
@@ -37,27 +35,25 @@ class MinioClient:
                 object_name=object_name,
                 data=BytesIO(data),
                 length=len(data),
-                content_type="image/jpeg"
+                content_type=content_type,
             )
-
         except S3Error as e:
             raise RuntimeError(f"MinIO upload error: {e}")
 
     def get_image(self, object_name: str) -> bytes:
-        """Получить изображение"""
-
+        response = None
         try:
             response = self.client.get_object(self.bucket, object_name)
             return response.read()
-
         except S3Error as e:
             raise RuntimeError(f"MinIO read error: {e}")
+        finally:
+            if response is not None:
+                response.close()
+                response.release_conn()
 
     def delete_image(self, object_name: str):
-        """Удалить изображение"""
-
         try:
             self.client.remove_object(self.bucket, object_name)
-
         except S3Error as e:
             raise RuntimeError(f"MinIO delete error: {e}")

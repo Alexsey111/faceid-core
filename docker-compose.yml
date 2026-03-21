@@ -43,8 +43,11 @@ services:
     ports:
       - "8000:8000"
     environment:
+      - ENV=testing
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
       - REDIS_URL=redis://redis:6379/0
+      - REDIS_HOST=redis
+      - FAISS_ENABLED=true
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
@@ -62,9 +65,13 @@ services:
     build:
       context: .
       dockerfile: faceid-core/infrastructure/docker/worker.Dockerfile
+    command: celery -A app.workers.celery_app worker --loglevel=info --concurrency=4
     environment:
+      - ENV=testing
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
       - REDIS_URL=redis://redis:6379/0
+      - REDIS_HOST=redis
+      - FAISS_ENABLED=true
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
@@ -77,6 +84,13 @@ services:
         condition: service_started
     volumes:
       - ./models:/app/models
+
+  prometheus:
+    image: prom/prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
 
 volumes:
   postgres_data:

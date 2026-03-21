@@ -18,4 +18,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY faceid-core/app ./app
 
-CMD ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info"]
+CMD ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info", "--concurrency=4", "--prefetch-multiplier=1"]
