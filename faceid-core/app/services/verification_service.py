@@ -8,7 +8,6 @@ import time
 from app.ml.pipeline import FacePipeline
 from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.db.repositories.verification_repo import VerificationRepository
-from app.services.decision_service import DecisionService
 from app.services.liveness_service import LivenessService
 from app.services.anti_replay_service import AntiReplayService
 from app.services.search_service import SearchService
@@ -24,7 +23,6 @@ except Exception:
     METRICS_ENABLED = False
 
 THRESHOLD = 0.35  # minimal similarity threshold для уверенного совпадения
-LOW_CONFIDENCE_THRESHOLD = 0.5  # нижний порог для режима low_confidence
 logger = logging.getLogger("verification")
 
 
@@ -34,6 +32,14 @@ def _metric_bool(value: Optional[bool]) -> str:
     if value is False:
         return "false"
     return "none"
+
+
+def _log_extra(job_id: Optional[str], **fields: Any) -> dict[str, Any]:
+    extra: dict[str, Any] = {}
+    if job_id is not None:
+        extra["job_id"] = job_id
+    extra.update(fields)
+    return extra
 
 
 def _observe_stage(stage: str, duration_ms: float) -> None:
@@ -74,30 +80,78 @@ class VerificationService:
 
     def __init__(
         self,
-        embedding_repo: EmbeddingRepository,
-        verification_repo: VerificationRepository,
+        embedding_repo: EmbeddingRepository | None,
+        verification_repo: VerificationRepository | None,
         search_service: SearchService | None = None,
         pipeline: Any | None = None,
     ):
         self.embedding_repo = embedding_repo
         self.verification_repo = verification_repo
         self.pipeline = pipeline if pipeline is not None else FacePipeline()
-        self.search_service = (
-            search_service if search_service is not None else SearchService(embedding_repo)
-        )
+        self.search_service = search_service
+        if self.search_service is None and embedding_repo is not None:
+            self.search_service = SearchService(embedding_repo)
+
+    def extract_features(self, image_bytes: bytes) -> dict:
+        result = self.pipeline.process(image_bytes)
+
+        embedding = np.asarray(result["embedding"], dtype=np.float32)
+        norm = np.linalg.norm(embedding)
+        if norm == 0.0:
+            raise ValueError("Invalid embedding vector")
+
+        embedding = embedding / norm
+
+        liveness = result.get("liveness", {})
+
+        return {
+            "embedding": embedding,
+            "liveness": liveness,
+            "timings": result.get("timings", {}),
+        }
+
+    def make_decision(
+        self,
+        embedding,
+        top_k,
+        liveness,
+        user_id=None,
+    ) -> dict:
+        _ = embedding
+        _ = liveness
+        _ = user_id
+
+        if not top_k:
+            return {"status": "no_match"}
+
+        similarity = float(top_k[0]["similarity"])
+
+        if similarity >= THRESHOLD:
+            return {
+                "status": "match",
+                "user_id": top_k[0]["user_id"],
+                "similarity": similarity,
+            }
+
+        return {
+            "status": "no_match",
+            "similarity": similarity,
+        }
 
     async def verify_face(
         self,
         image_bytes: bytes,
         user_id: Optional[str] = None,
         require_liveness: bool = False,
-        check_replay: bool = True
+        check_replay: bool = True,
+        job_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         return await self._verify_face_impl(
             image_bytes=image_bytes,
             user_id=user_id,
             require_liveness=require_liveness,
             check_replay=check_replay,
+            job_id=job_id,
         )
 
     async def _verify_face_impl(
@@ -105,13 +159,23 @@ class VerificationService:
         image_bytes: bytes,
         user_id: Optional[str] = None,
         require_liveness: bool = False,
-        check_replay: bool = True
+        check_replay: bool = True,
+        job_id: Optional[str] = None,
     ) -> Dict[str, Any]:
 
         t_start = time.time()
 
-        def record_result(status: str, liveness_passed: Optional[bool]) -> None:
-            return
+        verification_repo = self.verification_repo
+        if verification_repo is None:
+            raise RuntimeError("VerificationRepository is required for verify_face")
+
+        search_service = self.search_service
+        if search_service is None:
+            raise RuntimeError("SearchService is required for verify_face")
+
+        embedding_repo = self.embedding_repo
+        if embedding_repo is None:
+            raise RuntimeError("EmbeddingRepository is required for verify_face")
 
         # Convert user_id to int or None
         try:
@@ -125,19 +189,35 @@ class VerificationService:
             replay_detected = not AntiReplayService.check(image_bytes)
 
         logger.info(
-            "verify_started",
-            extra={
-                "user_id": user_id,
-                "require_liveness": require_liveness,
-            }
+            "verify_started job_id=%s",
+            job_id,
+            extra=_log_extra(
+                job_id,
+                user_id=user_id,
+                require_liveness=require_liveness,
+            ),
         )
 
         try:
-            result = self.pipeline.process(image_bytes)
-        except Exception as e:
-            logger.exception("pipeline_failed", extra={"error": str(e)})
+            features = self.extract_features(image_bytes)
+        except ValueError as e:
+            if str(e) == "Invalid embedding vector":
+                _record_verify_result("no_match")
+                _observe_verify_latency(t_start)
+                return {
+                    "status": "no_match",
+                    "similarity": 0.0,
+                    "liveness_passed": None,
+                    "replay_detected": replay_detected,
+                }
 
-            await self.verification_repo.create_log(
+            logger.exception(
+                "pipeline_failed job_id=%s",
+                job_id,
+                extra=_log_extra(job_id, error=str(e)),
+            )
+
+            await verification_repo.create_log(
                 user_id=user_id_int,
                 similarity=0.0,
                 success=False,
@@ -145,7 +225,29 @@ class VerificationService:
                 liveness_score=None,
                 is_genuine=None
             )
-            record_result("processing_failed", False)
+            _record_verify_result("processing_failed")
+            _observe_verify_latency(t_start)
+
+            return {
+                "status": "processing_failed",
+                "liveness_passed": False,
+                "replay_detected": replay_detected
+            }
+        except Exception as e:
+            logger.exception(
+                "pipeline_failed job_id=%s",
+                job_id,
+                extra=_log_extra(job_id, error=str(e)),
+            )
+
+            await verification_repo.create_log(
+                user_id=user_id_int,
+                similarity=0.0,
+                success=False,
+                margin=None,
+                liveness_score=None,
+                is_genuine=None
+            )
             _record_verify_result("processing_failed")
             _observe_verify_latency(t_start)
 
@@ -155,22 +257,9 @@ class VerificationService:
                 "replay_detected": replay_detected
             }
 
-        embedding: np.ndarray = result["embedding"]
-        embedding = np.asarray(embedding, dtype=np.float32)
-        norm = np.linalg.norm(embedding)
-        if norm == 0.0:
-            record_result("no_match", None)
-            _record_verify_result("no_match")
-            _observe_verify_latency(t_start)
-            return {
-                "status": "no_match",
-                "similarity": 0.0,
-                "liveness_passed": None,
-                "replay_detected": replay_detected
-            }
-        embedding = embedding / norm
-        liveness_signals: Dict[str, Any] = result.get("liveness", {})
-        pipeline_time = result.get("timings", {})
+        embedding = features["embedding"]
+        liveness_signals = features["liveness"]
+        pipeline_time = features["timings"]
 
         if "total_pipeline_ms" in pipeline_time:
             _observe_stage("pipeline", float(pipeline_time["total_pipeline_ms"]))
@@ -182,10 +271,9 @@ class VerificationService:
             _observe_stage("liveness", float(pipeline_time["liveness_ms"]))
 
         logger.info(
-            "pipeline_completed",
-            extra={
-                "timings": pipeline_time
-            }
+            "pipeline_completed job_id=%s",
+            job_id,
+            extra=_log_extra(job_id, timings=pipeline_time),
         )
 
         # Compute composite liveness score
@@ -197,7 +285,7 @@ class VerificationService:
         liveness_passed = LivenessService.is_passed(liveness_signals)
         if require_liveness and not liveness_passed:
 
-            await self.verification_repo.create_log(
+            await verification_repo.create_log(
                 user_id=user_id_int,
                 similarity=0.0,
                 success=False,
@@ -205,7 +293,6 @@ class VerificationService:
                 liveness_score=liveness_score,
                 is_genuine=None
             )
-            record_result("spoof_detected", False)
             _record_verify_result("spoof_detected")
             _record_liveness_result(False)
             _observe_verify_latency(t_start)
@@ -222,7 +309,7 @@ class VerificationService:
 
         # VECTOR SEARCH (top-2 for margin calculation)
         t0 = time.time()
-        top_k = await self.search_service.search_top_k(embedding, k=2)
+        top_k = await search_service.search_top_k(embedding, k=2)
         search_time = (time.time() - t0) * 1000
         _observe_stage("search", search_time)
 
@@ -230,55 +317,32 @@ class VerificationService:
         top2_similarity = top_k[1]["similarity"] if len(top_k) > 1 else 0.0
         margin = top1_similarity - top2_similarity
         logger.info(
-            "search_completed",
-            extra={
-                "top1_similarity": top1_similarity,
-                "top2_similarity": top2_similarity,
-                "margin": margin,
-                "search_ms": search_time
-            }
+            "search_completed job_id=%s",
+            job_id,
+            extra=_log_extra(
+                job_id,
+                top1_similarity=top1_similarity,
+                top2_similarity=top2_similarity,
+                margin=margin,
+                search_ms=search_time,
+            ),
         )
 
-        if not top_k:
-            total_time = (time.time() - t_start) * 1000
-            logger.info(
-                "verify_result",
-                extra={
-                    "status": "no_match",
-                    "similarity": 0.0,
-                    "liveness_passed": liveness_passed,
-                    "replay_detected": replay_detected,
-                    "total_ms": total_time
-                }
-            )
-            record_result("no_match", liveness_passed)
-            return {
-                "status": "no_match",
-                "similarity": 0.0,
-                "margin": 0.0,
-                "timings": {
-                    "pipeline": pipeline_time,
-                    "search_ms": search_time,
-                    "total_ms": total_time
-                },
-                "replay_detected": replay_detected
-            }
-
         similarity = top1_similarity
-        matched_user_id = top_k[0]["user_id"]
+        matched_user_id = top_k[0]["user_id"] if top_k else None
 
         # Check if matches requested user_id (by external_id)
         is_genuine: bool | None = None
         if user_id:
             from app.db.repositories.user_repo import UserRepository
-            user_repo = UserRepository(self.embedding_repo.db)
+            user_repo = UserRepository(embedding_repo.db)
             expected_user = await user_repo.get_by_external_id(user_id)
 
             if expected_user:
-                expected_user_id = getattr(expected_user, 'id')
+                expected_user_id = getattr(expected_user, "id")
 
                 # Get all embeddings for this user and find best score
-                embeddings = await self.search_service.search_user_embeddings(expected_user_id)
+                embeddings = await search_service.search_user_embeddings(expected_user_id)
                 if embeddings:
                     embedding_vectors = np.stack(embeddings)
                     centroid = np.mean(embedding_vectors, axis=0)
@@ -291,80 +355,45 @@ class VerificationService:
                     matched_user_id = expected_user_id
                     is_genuine = True
                 else:
+                    matched_user_id = expected_user_id
                     is_genuine = False
                     similarity = 0.0
 
-                if not is_genuine:
-                    await self.verification_repo.create_log(
-                        user_id=expected_user_id,
-                        similarity=similarity,
-                        success=False,
-                        margin=margin,
-                        liveness_score=liveness_score,
-                        is_genuine=is_genuine
-                    )
-                    record_result("no_match", liveness_passed)
-                    return {
-                        "status": "no_match",
-                        "liveness_passed": liveness_passed,
-                        "liveness": {
-                            "score": liveness_score,
-                            "risk": liveness_risk
-                        },
-                        "replay_detected": replay_detected
-                    }
+        decision = self.make_decision(embedding, top_k, liveness_signals, user_id=user_id)
+        decision_status = decision["status"]
+        decision_similarity = float(decision.get("similarity", similarity))
+        decision_user_id = decision.get("user_id", matched_user_id)
 
-        # Decision logic
-        best_score = similarity
-        # binary decision for match
-        is_match = similarity >= THRESHOLD
-
-        # extended status
-        if is_match:
-            status = "match"
-            confidence = "high"
-        else:
-            confidence_score = (
-                similarity * 0.7
-                + margin * 0.2
-                + liveness_score * 0.1
-            )
-
-            if confidence_score >= 0.6:
-                status = "low_confidence"
-                confidence = "medium"
-            else:
-                status = "no_match"
-                confidence = "low"
-
-        await self.verification_repo.create_log(
-            user_id=top_k[0]["user_id"] if top_k else None,
-            similarity=similarity,
+        await verification_repo.create_log(
+            user_id=decision_user_id,
+            similarity=decision_similarity,
             margin=margin,
             liveness_score=liveness_score,
-            success=(status == "match")
+            success=(decision_status == "match"),
+            is_genuine=is_genuine,
         )
 
         total_time = (time.time() - t_start) * 1000
         logger.info(
-            "verify_result",
-            extra={
-                "status": status,
-                "similarity": best_score,
-                "liveness_passed": liveness_passed,
-                "replay_detected": replay_detected,
-                "total_ms": total_time
-            }
+            "verify_result job_id=%s",
+            job_id,
+            extra=_log_extra(
+                job_id,
+                status=decision_status,
+                similarity=decision_similarity,
+                liveness_passed=liveness_passed,
+                replay_detected=replay_detected,
+                total_ms=total_time,
+            ),
         )
-        record_result(status, liveness_passed)
-        _record_verify_result(status)
+        _record_verify_result(decision_status)
         _record_liveness_result(liveness_passed)
         _observe_verify_latency(t_start)
 
         return {
-            "status": status,
-            "user_id": matched_user_id if status == "match" else None,
-            "similarity": float(best_score),
+            "status": decision_status,
+            "user_id": decision_user_id if decision_status == "match" else None,
+            "similarity": float(decision_similarity),
             "margin": float(margin),
             "liveness_passed": liveness_passed,
             "replay_detected": replay_detected

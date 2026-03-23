@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import logging
 from pathlib import Path
 from typing import Optional
@@ -13,10 +14,13 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.verification_job_repo import VerificationJobRepository
+from app.core.config import settings
 from app.db.session import get_db
 from app.infrastructure.minio_client import MinioClient
+from app.infrastructure.redis_client import redis_client
 from app.models.verification_job import JobStatus
 from app.schemas.verify import VerifyRequest, VerifyResponse
+from app.services.backpressure import get_active_tasks, get_queue_length
 from app.services.rate_limiter import RateLimiter
 from app.services.verification_service_factory import get_verification_service
 from app.workers.tasks.verify_task import verify_task
@@ -50,8 +54,7 @@ async def _enqueue_verify_job(
             image_bytes,
             content_type,
         )
-        await asyncio.to_thread(
-            verify_task.delay,
+        verify_task.delay(
             job_id=job_id,
             image_url=object_name,
             user_id=user_id,
@@ -129,6 +132,15 @@ async def verify_async(
     """Production async verify: file -> MinIO -> queue -> worker."""
     await asyncio.to_thread(RateLimiter.check, http_request, "verify_async", 5)
 
+    active = get_active_tasks()
+    queue_size = get_queue_length("faceid")
+
+    if active >= settings.MAX_ACTIVE_TASKS:
+        raise HTTPException(429, "Too many active tasks")
+
+    if queue_size >= settings.MAX_QUEUE_SIZE:
+        raise HTTPException(429, "Queue is full")
+
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Invalid image format")
 
@@ -198,6 +210,13 @@ async def get_verify_result(
     job_id: str,
     db: AsyncSession = Depends(get_db),
 ):
+    cached = redis_client.get(f"job:{job_id}")
+    if cached:
+        try:
+            return json.loads(cached)
+        except Exception:
+            pass
+
     job_repo = VerificationJobRepository(db)
     job = await job_repo.get_by_id(job_id)
 

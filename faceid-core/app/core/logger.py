@@ -27,3 +27,5 @@ def setup_logging():
     root_logger = logging.getLogger()
     root_logger.setLevel(logging.INFO)
     root_logger.handlers = [handler]
+    logging.getLogger("insightface").setLevel(logging.WARNING)
+    logging.getLogger("onnxruntime").setLevel(logging.WARNING)

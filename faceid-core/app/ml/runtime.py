@@ -1,7 +1,13 @@
 # faceid-core/app/ml/runtime.py
 
+import os
+import logging
 from functools import lru_cache
 from pathlib import Path
+
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
 import onnxruntime as ort
 from insightface.app import FaceAnalysis
@@ -14,12 +20,15 @@ MODELS_DIR = Path(settings.MODELS_DIR)
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
 PROJECT_MODELS_DIR = PROJECT_ROOT / "models"
+logger = logging.getLogger(__name__)
 
 
 def _make_session_options() -> ort.SessionOptions:
     so = ort.SessionOptions()
-    so.intra_op_num_threads = 4
+    so.intra_op_num_threads = 1
     so.inter_op_num_threads = 1
+    so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+    so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     return so
 
 
@@ -42,24 +51,14 @@ def _detect_models_root() -> Path:
 
 
 def get_available_providers():
-
-    available = ort.get_available_providers()
-
-    if "CUDAExecutionProvider" in available:
-        return ["CUDAExecutionProvider", "CPUExecutionProvider"]
-
-    return ["CPUExecutionProvider"]
+    return ort.get_available_providers()
 
 
-@lru_cache(maxsize=1)
-def get_face_app() -> FaceAnalysis:
-
-    providers = get_available_providers()
-    sess_options = _make_session_options()
-
-    ctx_id = 0 if "CUDAExecutionProvider" in providers else -1
-    root_dir = _detect_models_root()
-
+def _build_face_app(
+    root_dir: Path,
+    providers: list[str],
+    sess_options: ort.SessionOptions,
+) -> FaceAnalysis:
     try:
         app = FaceAnalysis(
             name="buffalo_l",
@@ -70,15 +69,37 @@ def get_face_app() -> FaceAnalysis:
     except TypeError:
         app = FaceAnalysis(
             name="buffalo_l",
-            root=str(root_dir)
+            root=str(root_dir),
+            providers=providers,
+        )
+    except Exception:
+        app = FaceAnalysis(
+            name="buffalo_l",
+            root=str(root_dir),
         )
 
-    app.prepare(
-        ctx_id=ctx_id,
-        det_size=(640, 640)
-    )
-
+    ctx_id = 0 if "CUDAExecutionProvider" in providers else -1
+    det_size = (640, 640) if "CUDAExecutionProvider" in providers else (320, 320)
+    app.prepare(ctx_id=ctx_id, det_size=det_size)
     return app
+
+
+@lru_cache(maxsize=1)
+def get_face_app() -> FaceAnalysis:
+
+    sess_options = _make_session_options()
+    root_dir = _detect_models_root()
+
+    for providers in (["CUDAExecutionProvider", "CPUExecutionProvider"], ["CPUExecutionProvider"]):
+        try:
+            return _build_face_app(root_dir, providers, sess_options)
+        except Exception as exc:
+            if providers[0] == "CUDAExecutionProvider":
+                logger.warning("CUDA FaceAnalysis init failed, falling back to CPU: %s", exc)
+                continue
+            raise
+
+    raise RuntimeError("Failed to initialize FaceAnalysis")
 
 
 @lru_cache(maxsize=1)
@@ -89,13 +110,17 @@ def get_liveness_model():
     if not model_path.exists():
         return None
 
-    providers = get_available_providers()
     sess_options = _make_session_options()
 
-    session = ort.InferenceSession(
-        str(model_path),
-        sess_options=sess_options,
-        providers=providers
-    )
-
-    return session
+    for providers in (["CUDAExecutionProvider", "CPUExecutionProvider"], ["CPUExecutionProvider"]):
+        try:
+            return ort.InferenceSession(
+                str(model_path),
+                sess_options=sess_options,
+                providers=providers
+            )
+        except Exception as exc:
+            if providers[0] == "CUDAExecutionProvider":
+                logger.warning("CUDA liveness session init failed, falling back to CPU: %s", exc)
+                continue
+            raise

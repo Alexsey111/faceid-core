@@ -1,6 +1,8 @@
 # app/infrastructure/redis_client.py
 
 import redis
+from typing import cast
+
 from app.core.config import settings
 
 
@@ -15,14 +17,26 @@ class RedisClient:
             decode_responses=True
         )
 
-    def get(self, key: str):
-        return self.client.get(key)
+    def get(self, key: str) -> str | None:
+        return cast(str | None, self.client.get(key))
 
-    def set(self, key: str, value: str, ttl: int = 300):
+    def set(self, key: str, value: str, ttl: int = 300) -> None:
         self.client.set(key, value, ex=ttl)
 
-    def delete(self, key: str):
+    def setex(self, key: str, value: str, ttl: int = 300) -> None:
+        self.client.setex(key, ttl, value)
+
+    def delete(self, key: str) -> None:
         self.client.delete(key)
+
+    def incr(self, key: str, amount: int = 1) -> int:
+        return cast(int, self.client.incr(key, amount))
+
+    def decr(self, key: str, amount: int = 1) -> int:
+        return cast(int, self.client.decr(key, amount))
+
+    def llen(self, key: str) -> int:
+        return cast(int, self.client.llen(key))
 
 
 redis_client = RedisClient()

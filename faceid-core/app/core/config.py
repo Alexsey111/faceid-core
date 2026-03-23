@@ -89,6 +89,8 @@ class Settings(BaseSettings):
     # -------------------------
     CELERY_BROKER_URL: str = "redis://redis:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://redis:6379/0"
+    MAX_ACTIVE_TASKS: int = 3  # начнем с 3, подберем через k6
+    MAX_QUEUE_SIZE: int = 2
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

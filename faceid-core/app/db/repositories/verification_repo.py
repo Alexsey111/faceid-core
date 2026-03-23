@@ -20,7 +20,8 @@ class VerificationRepository:
         success: bool,
         margin: float | None = None,
         liveness_score: float | None = None,
-        is_genuine: bool | None = None
+        is_genuine: bool | None = None,
+        commit: bool = True,
     ) -> Optional[VerificationLog]:
         """
         Create a verification log entry.
@@ -55,6 +56,7 @@ class VerificationRepository:
 
         self.db.add(record)
         await self.db.flush()
-        await self.db.commit()
+        if commit:
+            await self.db.commit()
 
         return record

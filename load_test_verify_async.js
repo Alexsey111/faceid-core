@@ -5,14 +5,9 @@ import { Trend } from "k6/metrics";
 export const options = {
   scenarios: {
     async_verify: {
-      executor: "ramping-vus",
-      startVUs: 1,
-      stages: [
-        { duration: "30s", target: 10 },
-        { duration: "1m", target: 20 },
-        { duration: "1m", target: 30 },
-        { duration: "30s", target: 0 },
-      ],
+      executor: "constant-vus",
+      vus: Number(__ENV.VUS || 1),
+      duration: __ENV.DURATION || "2m",
     },
   },
 };

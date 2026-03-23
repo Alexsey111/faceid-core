@@ -9,6 +9,16 @@ from app.db.repositories.verification_repo import VerificationRepository
 from app.services.search_service import SearchService
 
 
+_pipeline: FacePipeline | None = None
+
+
+def get_pipeline() -> FacePipeline:
+    global _pipeline
+    if _pipeline is None:
+        _pipeline = FacePipeline()
+    return _pipeline
+
+
 def get_verification_service(db: AsyncSession) -> VerificationService:
     embedding_repo = EmbeddingRepository(db)
     verification_repo = VerificationRepository(db)
@@ -17,5 +27,5 @@ def get_verification_service(db: AsyncSession) -> VerificationService:
         embedding_repo=embedding_repo,
         verification_repo=verification_repo,
         search_service=SearchService(embedding_repo),
-        pipeline=FacePipeline(),
+        pipeline=get_pipeline(),
     )

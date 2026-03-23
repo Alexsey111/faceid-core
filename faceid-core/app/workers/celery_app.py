@@ -1,13 +1,19 @@
-# workers/celery_app.py
+# faceid-core\app\workers\celery_app.py
+
+import logging
 
 from celery import Celery
 from app.core.config import settings
+
+logging.getLogger("insightface").setLevel(logging.WARNING)
+logging.getLogger("onnxruntime").setLevel(logging.WARNING)
 
 
 celery_app = Celery(
     "faceid_core",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_RESULT_BACKEND,
+    include=["app.workers.tasks.verify_task"],
 )
 
 
@@ -17,6 +23,7 @@ celery_app.conf.update(
     accept_content=["json"],
     timezone="UTC",
     enable_utc=True,
+    task_default_queue="faceid",
 )
 
 celery_app.conf.task_routes = {

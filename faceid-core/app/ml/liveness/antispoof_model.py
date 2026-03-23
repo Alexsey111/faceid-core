@@ -2,7 +2,12 @@
 
 # app/ml/liveness/antispoof_model.py
 
+import os
 from pathlib import Path
+
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+
 import cv2
 import numpy as np
 import onnxruntime as ort
@@ -10,7 +15,7 @@ import onnxruntime as ort
 
 def _make_session_options() -> ort.SessionOptions:
     so = ort.SessionOptions()
-    so.intra_op_num_threads = 4
+    so.intra_op_num_threads = 1
     so.inter_op_num_threads = 1
     return so
 
