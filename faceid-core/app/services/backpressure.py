@@ -1,31 +1,36 @@
+# faceid-core\app\services\backpressure.py
 from __future__ import annotations
 
+import logging
+
+from app.core.config import settings
 from app.infrastructure.redis_client import redis_client
 
-ACTIVE_KEY = "faceid:active_tasks"
+IN_SYSTEM_KEY = "faceid:in_system"
+logger = logging.getLogger(__name__)
 
 
-def get_active_tasks() -> int:
-    value = redis_client.get(ACTIVE_KEY)
-    return int(value) if value else 0
+def try_reserve_slot() -> bool:
+    in_system = redis_client.incr(IN_SYSTEM_KEY)
+    redis_client.expire(IN_SYSTEM_KEY, 60)
+    logger.info(
+        "[BP] try_reserve in_system=%s limit=%s",
+        in_system,
+        settings.MAX_ACTIVE_TASKS,
+    )
 
+    if in_system > settings.MAX_ACTIVE_TASKS:
+        decrement_active()
+        return False
 
-def get_queue_length(queue_name: str = "faceid") -> int:
-    try:
-        return redis_client.llen(queue_name)
-    except Exception:
-        return 0
-
-
-def increment_active() -> None:
-    redis_client.incr(ACTIVE_KEY)
+    return True
 
 
 def decrement_active() -> None:
     try:
-        value = redis_client.decr(ACTIVE_KEY)
+        value = redis_client.decr(IN_SYSTEM_KEY)
         if value < 0:
-            redis_client.set(ACTIVE_KEY, "0")
+            redis_client.set(IN_SYSTEM_KEY, "0")
     except Exception:
         # защита от падений Redis
         pass

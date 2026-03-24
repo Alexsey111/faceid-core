@@ -23,11 +23,12 @@ celery_app.conf.update(
     accept_content=["json"],
     timezone="UTC",
     enable_utc=True,
-    task_default_queue="faceid",
+    task_default_queue=settings.CELERY_TASK_QUEUE,
 )
+celery_app.conf.worker_prefetch_multiplier = 1
 
 celery_app.conf.task_routes = {
-    "app.workers.tasks.*": {"queue": "faceid"}
+    "app.workers.tasks.*": {"queue": settings.CELERY_TASK_QUEUE}
 }
 celery_app.conf.update(
     task_time_limit=25,

@@ -14,13 +14,12 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.verification_job_repo import VerificationJobRepository
-from app.core.config import settings
 from app.db.session import get_db
 from app.infrastructure.minio_client import MinioClient
 from app.infrastructure.redis_client import redis_client
 from app.models.verification_job import JobStatus
 from app.schemas.verify import VerifyRequest, VerifyResponse
-from app.services.backpressure import get_active_tasks, get_queue_length
+from app.services.backpressure import decrement_active, try_reserve_slot
 from app.services.rate_limiter import RateLimiter
 from app.services.verification_service_factory import get_verification_service
 from app.workers.tasks.verify_task import verify_task
@@ -130,43 +129,41 @@ async def verify_async(
     db: AsyncSession = Depends(get_db),
 ):
     """Production async verify: file -> MinIO -> queue -> worker."""
-    await asyncio.to_thread(RateLimiter.check, http_request, "verify_async", 5)
+    if not try_reserve_slot():
+        raise HTTPException(status_code=429, detail="Backpressure: active_limit")
 
-    active = get_active_tasks()
-    queue_size = get_queue_length("faceid")
+    try:
+        await asyncio.to_thread(RateLimiter.check, http_request, "verify_async", 5)
 
-    if active >= settings.MAX_ACTIVE_TASKS:
-        raise HTTPException(429, "Too many active tasks")
+        if not file.content_type or not file.content_type.startswith("image/"):
+            raise HTTPException(status_code=400, detail="Invalid image format")
 
-    if queue_size >= settings.MAX_QUEUE_SIZE:
-        raise HTTPException(429, "Queue is full")
+        image_bytes = await file.read()
 
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="Invalid image format")
+        if len(image_bytes) > MAX_IMAGE_SIZE:
+            raise HTTPException(status_code=400, detail="Image too large")
 
-    image_bytes = await file.read()
+        job_id = str(uuid4())
+        safe_filename = Path(file.filename or "image.jpg").name
+        object_name = f"verify/{job_id}/{safe_filename}"
 
-    if len(image_bytes) > MAX_IMAGE_SIZE:
-        raise HTTPException(status_code=400, detail="Image too large")
+        await _enqueue_verify_job(
+            db=db,
+            job_id=job_id,
+            image_bytes=image_bytes,
+            object_name=object_name,
+            content_type=file.content_type or "image/jpeg",
+            user_id=user_id,
+            require_liveness=require_liveness,
+        )
 
-    job_id = str(uuid4())
-    safe_filename = Path(file.filename or "image.jpg").name
-    object_name = f"verify/{job_id}/{safe_filename}"
-
-    await _enqueue_verify_job(
-        db=db,
-        job_id=job_id,
-        image_bytes=image_bytes,
-        object_name=object_name,
-        content_type=file.content_type or "image/jpeg",
-        user_id=user_id,
-        require_liveness=require_liveness,
-    )
-
-    return {
-        "job_id": job_id,
-        "status": "pending",
-    }
+        return {
+            "job_id": job_id,
+            "status": "pending",
+        }
+    except Exception:
+        decrement_active()
+        raise
 
 
 @router.post("/verify_async_base64")
@@ -176,33 +173,40 @@ async def verify_async_base64(
     db: AsyncSession = Depends(get_db),
 ):
     """Legacy async verify path that still accepts JSON base64."""
-    await asyncio.to_thread(RateLimiter.check, http_request, "verify_async", 5)
+    if not try_reserve_slot():
+        raise HTTPException(status_code=429, detail="Backpressure: active_limit")
 
     try:
-        image_bytes = base64.b64decode(request.image)
+        await asyncio.to_thread(RateLimiter.check, http_request, "verify_async", 5)
+
+        try:
+            image_bytes = base64.b64decode(request.image)
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid base64")
+
+        if len(image_bytes) > MAX_IMAGE_SIZE:
+            raise HTTPException(status_code=400, detail="Image too large")
+
+        job_id = str(uuid4())
+        object_name = f"verify/{job_id}/legacy.jpg"
+
+        await _enqueue_verify_job(
+            db=db,
+            job_id=job_id,
+            image_bytes=image_bytes,
+            object_name=object_name,
+            content_type="image/jpeg",
+            user_id=request.user_id,
+            require_liveness=request.require_liveness,
+        )
+
+        return {
+            "job_id": job_id,
+            "status": "pending",
+        }
     except Exception:
-        raise HTTPException(status_code=400, detail="Invalid base64")
-
-    if len(image_bytes) > MAX_IMAGE_SIZE:
-        raise HTTPException(status_code=400, detail="Image too large")
-
-    job_id = str(uuid4())
-    object_name = f"verify/{job_id}/legacy.jpg"
-
-    await _enqueue_verify_job(
-        db=db,
-        job_id=job_id,
-        image_bytes=image_bytes,
-        object_name=object_name,
-        content_type="image/jpeg",
-        user_id=request.user_id,
-        require_liveness=request.require_liveness,
-    )
-
-    return {
-        "job_id": job_id,
-        "status": "pending",
-    }
+        decrement_active()
+        raise
 
 
 @router.get("/verify_result/{job_id}")

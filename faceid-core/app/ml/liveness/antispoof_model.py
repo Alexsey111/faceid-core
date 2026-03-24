@@ -1,6 +1,4 @@
-# antispoof_model.py - Модель антиспуфинга
-
-# app/ml/liveness/antispoof_model.py
+# app/ml/liveness/antispoof_model.py - Модель антиспуфинга
 
 import os
 from pathlib import Path

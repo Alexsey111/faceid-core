@@ -3,6 +3,30 @@ import json
 from datetime import datetime
 
 
+_STANDARD_LOG_RECORD_KEYS = {
+    "name",
+    "msg",
+    "args",
+    "levelname",
+    "levelno",
+    "pathname",
+    "filename",
+    "module",
+    "exc_info",
+    "exc_text",
+    "stack_info",
+    "lineno",
+    "funcName",
+    "created",
+    "msecs",
+    "relativeCreated",
+    "thread",
+    "threadName",
+    "processName",
+    "process",
+}
+
+
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         log_record = {
@@ -12,8 +36,11 @@ class JsonFormatter(logging.Formatter):
             "logger": record.name,
         }
 
-        # extra fields
-        extra_fields = getattr(record, "extra", None)
+        extra_fields = {
+            key: value
+            for key, value in record.__dict__.items()
+            if key not in _STANDARD_LOG_RECORD_KEYS and not key.startswith("_")
+        }
         if extra_fields:
             log_record.update(extra_fields)
 

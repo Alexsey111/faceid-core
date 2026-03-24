@@ -1,7 +1,5 @@
 #D:\python projects\faceid-core\faceid-core\infrastructure\docker-compose.yml
 
-version: '3.8'
-
 x-worker-base: &worker-base
   build:
     context: .
@@ -9,10 +7,14 @@ x-worker-base: &worker-base
   command: celery -A app.workers.celery_app worker -Q celery,faceid --loglevel=info --concurrency=1
   environment:
     - ENV=testing
+    - MODELS_DIR=/app/models
     - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
     - REDIS_URL=redis://redis:6379/0
     - REDIS_HOST=redis
-    - FAISS_ENABLED=true
+    - CELERY_BROKER_URL=redis://redis:6379/0
+    - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    - WORKER_COUNT=1
+    - FAISS_ENABLED=${FAISS_ENABLED:-true}
     - MINIO_ENDPOINT=minio:9000
     - MINIO_ACCESS_KEY=minioadmin
     - MINIO_SECRET_KEY=minioadmin
@@ -68,10 +70,14 @@ services:
       - "8000:8000"
     environment:
       - ENV=testing
+      - MODELS_DIR=/app/models
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
       - REDIS_URL=redis://redis:6379/0
       - REDIS_HOST=redis
-      - FAISS_ENABLED=true
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - WORKER_COUNT=1
+      - FAISS_ENABLED=${FAISS_ENABLED:-true}
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
@@ -87,13 +93,12 @@ services:
 
   worker:
     <<: *worker-base
-    deploy:
-      replicas: 3
+    # Scale with: docker compose up --scale worker=3
 
   prometheus:
     image: prom/prometheus
     ports:
-      - "9090:9090"
+      - "9190:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
 

@@ -65,16 +65,16 @@ class FacePipeline:
         detection = detections[0]
 
         assert self.encoder is not None, "encoder not initialized"
+
         t0 = time.time()
         embedding = self.encoder.normalize(detection["embedding"])
         timings["encode_ms"] = (time.time() - t0) * 1000
 
-        # --- FACE CROP ---
-        x1, y1, x2, y2 = map(int, detection["bbox"])
-        face_crop = image[y1:y2, x1:x2]
-
         # --- LIVENESS ---
         t0 = time.time()
+
+        x1, y1, x2, y2 = map(int, detection["bbox"])
+        face_crop = image[y1:y2, x1:x2]
 
         passive_score: Optional[float] = None
         if self.liveness and settings.DEBUG:

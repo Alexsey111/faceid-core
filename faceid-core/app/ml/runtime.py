@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 def _make_session_options() -> ort.SessionOptions:
     so = ort.SessionOptions()
-    so.intra_op_num_threads = 1
+    so.intra_op_num_threads = 4
     so.inter_op_num_threads = 1
     so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
@@ -65,13 +65,20 @@ def _build_face_app(
             root=str(root_dir),
             providers=providers,
             sess_options=sess_options,
+            det_name="scrfd_10g",
         )
     except TypeError:
-        app = FaceAnalysis(
-            name="buffalo_l",
-            root=str(root_dir),
-            providers=providers,
-        )
+        try:
+            app = FaceAnalysis(
+                name="buffalo_l",
+                root=str(root_dir),
+                providers=providers,
+            )
+        except TypeError:
+            app = FaceAnalysis(
+                name="buffalo_l",
+                root=str(root_dir),
+            )
     except Exception:
         app = FaceAnalysis(
             name="buffalo_l",

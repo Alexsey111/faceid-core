@@ -35,8 +35,8 @@ class RedisClient:
     def decr(self, key: str, amount: int = 1) -> int:
         return cast(int, self.client.decr(key, amount))
 
-    def llen(self, key: str) -> int:
-        return cast(int, self.client.llen(key))
+    def expire(self, key: str, ttl: int) -> None:
+        self.client.expire(key, ttl)
 
 
 redis_client = RedisClient()

@@ -15,11 +15,12 @@ from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.db.repositories.verification_job_repo import VerificationJobRepository
 from app.db.repositories.verification_repo import VerificationRepository
 from app.db.session import AsyncSessionLocal
+from app.core.config import settings
 from app.ml.pipeline import FacePipeline
 from app.infrastructure.minio_client import MinioClient
 from app.infrastructure.redis_client import redis_client
 from app.models.verification_job import JobStatus
-from app.services.backpressure import decrement_active, increment_active
+from app.services.backpressure import decrement_active
 from app.services.liveness_service import LivenessService
 from app.services.search_service import SearchService
 from app.services.verification_service import VerificationService
@@ -61,7 +62,9 @@ def warmup_pipeline() -> None:
         return
 
     try:
-        get_pipeline().process(_make_dummy_image_bytes())
+        # TEMP: only initialize the pipeline here.
+        # Running a dummy image through detection is noisy because it has no face.
+        get_pipeline()._init()
         _pipeline_warmed_up = True
         logger.info("pipeline_warmup_completed")
     except Exception as exc:
@@ -185,7 +188,8 @@ async def _process_verify_job(
             async with AsyncSessionLocal() as db:
                 search_service = SearchService(EmbeddingRepository(db))
                 top_k = await search_service.search_top_k(features["embedding"])
-            logger.warning("job_id=%s search=%.3fs", job_id, time.time() - t0)
+            search_time = (time.time() - t0) * 1000
+            logger.warning("job_id=%s search=%.3fs", job_id, search_time / 1000.0)
 
             # 5. CPU decision
             decision = service.make_decision(
@@ -234,6 +238,16 @@ async def _process_verify_job(
             await db.commit()
 
         logger.warning("job_id=%s total=%.3fs", job_id, time.time() - start_total)
+        logger.warning(
+            "stage_times job_id=%s preprocess_ms=%.3f detect_ms=%.3f embed_ms=%.3f search_ms=%.3f total_ms=%.3f faiss_enabled=%s",
+            job_id,
+            float(features["timings"].get("preprocess_ms", 0.0)),
+            float(features["timings"].get("detect_ms", 0.0)),
+            float(features["timings"].get("encode_ms", 0.0)),
+            float(search_time),
+            (time.time() - start_total) * 1000,
+            bool(settings.FAISS_ENABLED),
+        )
 
         _cache_job_result(
             job_id,
@@ -271,7 +285,6 @@ def process_verify_job(
     user_id: str | None = None,
     require_liveness: bool = False,
 ):
-    increment_active()
     try:
         loop = get_worker_loop()
         asyncio.set_event_loop(loop)

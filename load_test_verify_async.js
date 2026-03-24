@@ -16,6 +16,7 @@ const BASE_URL = "http://localhost:8000";
 const IMAGE_FILE = open("./tests/data/person1_small.jpg", "b");
 
 const e2eLatency = new Trend("e2e_latency");
+const ITERATION_PAUSE = Number(__ENV.PAUSE || 0.5);
 
 export default function () {
   const start = Date.now();
@@ -36,10 +37,18 @@ export default function () {
   try {
     jobId = enqueueRes.json("job_id");
   } catch (_) {
+    if (ITERATION_PAUSE > 0) {
+      sleep(ITERATION_PAUSE);
+    }
     return;
   }
 
-  if (!jobId) return;
+  if (!jobId) {
+    if (ITERATION_PAUSE > 0) {
+      sleep(ITERATION_PAUSE);
+    }
+    return;
+  }
 
   for (let attempts = 0; attempts < 40; attempts++) {
     const resultRes = http.get(`${BASE_URL}/verify_result/${jobId}`, {
@@ -68,5 +77,9 @@ export default function () {
     }
 
     sleep(0.2);
+  }
+
+  if (ITERATION_PAUSE > 0) {
+    sleep(ITERATION_PAUSE);
   }
 }

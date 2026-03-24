@@ -6,6 +6,7 @@ import numpy as np
 import time
 
 from app.ml.pipeline import FacePipeline
+from app.core.config import settings
 from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.db.repositories.verification_repo import VerificationRepository
 from app.services.liveness_service import LivenessService
@@ -385,6 +386,24 @@ class VerificationService:
                 replay_detected=replay_detected,
                 total_ms=total_time,
             ),
+        )
+        logger.warning(
+            "stage_times job_id=%s detect_ms=%.3f embed_ms=%.3f search_ms=%.3f total_ms=%.3f faiss_enabled=%s",
+            job_id,
+            float(pipeline_time.get("detect_ms", 0.0)),
+            float(pipeline_time.get("encode_ms", 0.0)),
+            float(search_time),
+            float(total_time),
+            bool(settings.FAISS_ENABLED),
+        )
+        print(
+            f"stage_times job_id={job_id} "
+            f"detect_ms={float(pipeline_time.get('detect_ms', 0.0)):.3f} "
+            f"embed_ms={float(pipeline_time.get('encode_ms', 0.0)):.3f} "
+            f"search_ms={float(search_time):.3f} "
+            f"total_ms={float(total_time):.3f} "
+            f"faiss_enabled={bool(settings.FAISS_ENABLED)}",
+            flush=True,
         )
         _record_verify_result(decision_status)
         _record_liveness_result(liveness_passed)
