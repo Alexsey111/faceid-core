@@ -119,12 +119,16 @@ async def _process_verify_job(
     image_url: str,
     user_id: str | None,
     require_liveness: bool,
+    request_received_time: float | None,
 ) -> None:
     logger.warning("TASK START job_id=%s", job_id)
     print(f"[START] pid={os.getpid()} time={time.time()}", flush=True)
     try:
         minio_client = MinioClient()
         start_total = time.time()
+        queue_delay_ms = 0.0
+        if request_received_time is not None:
+            queue_delay_ms = max(0.0, (start_total - request_received_time) * 1000)
 
         # 1. get job and move to processing
         async with AsyncSessionLocal() as db:
@@ -133,6 +137,11 @@ async def _process_verify_job(
             job = await job_repo.get_by_id(job_id)
             if job is None:
                 raise LookupError("Job not found")
+
+            queue_wait_ms = 0.0
+            created_at = getattr(job, "created_at", None)
+            if created_at is not None:
+                queue_wait_ms = max(0.0, (time.time() - created_at.timestamp()) * 1000)
 
             if job.status in (JobStatus.done, JobStatus.failed):
                 return
@@ -239,8 +248,10 @@ async def _process_verify_job(
 
         logger.warning("job_id=%s total=%.3fs", job_id, time.time() - start_total)
         logger.warning(
-            "stage_times job_id=%s preprocess_ms=%.3f detect_ms=%.3f embed_ms=%.3f search_ms=%.3f total_ms=%.3f faiss_enabled=%s",
+            "stage_times job_id=%s queue_delay_ms=%.3f queue_wait_ms=%.3f preprocess_ms=%.3f detect_ms=%.3f embed_ms=%.3f search_ms=%.3f total_ms=%.3f faiss_enabled=%s",
             job_id,
+            float(queue_delay_ms),
+            float(queue_wait_ms),
             float(features["timings"].get("preprocess_ms", 0.0)),
             float(features["timings"].get("detect_ms", 0.0)),
             float(features["timings"].get("encode_ms", 0.0)),
@@ -257,6 +268,8 @@ async def _process_verify_job(
                 "result": result,
                 "error": None,
                 "ready": True,
+                "queue_delay_ms": float(queue_delay_ms),
+                "queue_wait_ms": float(queue_wait_ms),
             },
         )
 
@@ -284,12 +297,13 @@ def process_verify_job(
     image_url: str,
     user_id: str | None = None,
     require_liveness: bool = False,
+    request_received_time: float | None = None,
 ):
     try:
         loop = get_worker_loop()
         asyncio.set_event_loop(loop)
         loop.run_until_complete(
-            _process_verify_job(job_id, image_url, user_id, require_liveness)
+            _process_verify_job(job_id, image_url, user_id, require_liveness, request_received_time)
         )
     except LookupError:
         return

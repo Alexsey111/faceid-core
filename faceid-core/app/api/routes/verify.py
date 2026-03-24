@@ -6,6 +6,7 @@ import asyncio
 import base64
 import json
 import logging
+import time
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
@@ -34,6 +35,7 @@ async def _enqueue_verify_job(
     *,
     db: AsyncSession,
     job_id: str,
+    request_received_time: float,
     image_bytes: bytes,
     object_name: str,
     content_type: str,
@@ -45,6 +47,7 @@ async def _enqueue_verify_job(
     await db.commit()
 
     minio_client = MinioClient()
+    queue_name = "verify_heavy" if require_liveness else "verify_fast"
 
     try:
         await asyncio.to_thread(
@@ -53,18 +56,25 @@ async def _enqueue_verify_job(
             image_bytes,
             content_type,
         )
-        verify_task.delay(
-            job_id=job_id,
-            image_url=object_name,
-            user_id=user_id,
-            require_liveness=require_liveness,
+        verify_task.apply_async(
+            kwargs={
+                "job_id": job_id,
+                "image_url": object_name,
+                "user_id": user_id,
+                "require_liveness": require_liveness,
+                "request_received_time": request_received_time,
+            },
+            queue=queue_name,
         )
     except Exception as exc:
         await job_repo.update(job_id, status=JobStatus.failed, error=str(exc))
         await db.commit()
         raise HTTPException(status_code=500, detail="Failed to enqueue verify job")
 
-    logger.info("verify_async_enqueued", extra={"job_id": job_id, "image_url": object_name})
+    logger.info(
+        "verify_async_enqueued",
+        extra={"job_id": job_id, "image_url": object_name, "queue": queue_name},
+    )
 
 
 @router.post("/verify", response_model=VerifyResponse)
@@ -101,7 +111,7 @@ async def verify_base64(
     http_request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Verify face against reference via JSON with base64 image."""
+    """Sync verify for low-load / smoke use only."""
     RateLimiter.check(http_request, "verify", limit=10)
 
     image_bytes = base64.b64decode(request.image)
@@ -144,12 +154,14 @@ async def verify_async(
             raise HTTPException(status_code=400, detail="Image too large")
 
         job_id = str(uuid4())
+        request_received_time = time.time()
         safe_filename = Path(file.filename or "image.jpg").name
         object_name = f"verify/{job_id}/{safe_filename}"
 
         await _enqueue_verify_job(
             db=db,
             job_id=job_id,
+            request_received_time=request_received_time,
             image_bytes=image_bytes,
             object_name=object_name,
             content_type=file.content_type or "image/jpeg",
@@ -172,7 +184,7 @@ async def verify_async_base64(
     http_request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Legacy async verify path that still accepts JSON base64."""
+    """Async verify via queue/workers for real load."""
     if not try_reserve_slot():
         raise HTTPException(status_code=429, detail="Backpressure: active_limit")
 
@@ -188,11 +200,13 @@ async def verify_async_base64(
             raise HTTPException(status_code=400, detail="Image too large")
 
         job_id = str(uuid4())
+        request_received_time = time.time()
         object_name = f"verify/{job_id}/legacy.jpg"
 
         await _enqueue_verify_job(
             db=db,
             job_id=job_id,
+            request_received_time=request_received_time,
             image_bytes=image_bytes,
             object_name=object_name,
             content_type="image/jpeg",

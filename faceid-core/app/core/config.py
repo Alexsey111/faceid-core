@@ -70,12 +70,14 @@ class Settings(BaseSettings):
     # -------------------------
     # Face verification thresholds
     # -------------------------
-    FACE_MATCH_THRESHOLD: float = 0.7
-    FACE_LOW_THRESHOLD: float = 0.5
-    FACE_MARGIN_THRESHOLD: float = 0.05
+    USE_PIPELINE_V2: bool = True
+    FACE_MATCH_THRESHOLD: float = 0.6
+    FACE_LOW_THRESHOLD: float = 0.3
+    FACE_MARGIN_THRESHOLD: float = 0.1
     LIVENESS_THRESHOLD: float = 0.7
-    HIGH_THRESHOLD: float = 0.55
-    LOW_THRESHOLD: float = 0.45
+    HIGH_THRESHOLD: float = 0.60
+    LOW_THRESHOLD: float = 0.30
+    MARGIN_THRESHOLD: float = 0.10
 
     # -------------------------
     # Security

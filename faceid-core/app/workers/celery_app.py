@@ -3,6 +3,7 @@
 import logging
 
 from celery import Celery
+from kombu import Queue
 from app.core.config import settings
 
 logging.getLogger("insightface").setLevel(logging.WARNING)
@@ -23,12 +24,16 @@ celery_app.conf.update(
     accept_content=["json"],
     timezone="UTC",
     enable_utc=True,
-    task_default_queue=settings.CELERY_TASK_QUEUE,
+    task_default_queue="verify_fast",
+    task_queues=(
+        Queue("verify_fast"),
+        Queue("verify_heavy"),
+    ),
 )
 celery_app.conf.worker_prefetch_multiplier = 1
 
 celery_app.conf.task_routes = {
-    "app.workers.tasks.*": {"queue": settings.CELERY_TASK_QUEUE}
+    "app.workers.tasks.verify_job": {"queue": "verify_fast"},
 }
 celery_app.conf.update(
     task_time_limit=25,

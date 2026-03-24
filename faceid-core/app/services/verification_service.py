@@ -6,6 +6,7 @@ import numpy as np
 import time
 
 from app.ml.pipeline import FacePipeline
+from app.ml.pipeline_v2 import FacePipelineV2
 from app.core.config import settings
 from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.db.repositories.verification_repo import VerificationRepository
@@ -23,7 +24,6 @@ try:
 except Exception:
     METRICS_ENABLED = False
 
-THRESHOLD = 0.35  # minimal similarity threshold для уверенного совпадения
 logger = logging.getLogger("verification")
 
 
@@ -88,7 +88,10 @@ class VerificationService:
     ):
         self.embedding_repo = embedding_repo
         self.verification_repo = verification_repo
-        self.pipeline = pipeline if pipeline is not None else FacePipeline()
+        if pipeline is not None:
+            self.pipeline = pipeline
+        else:
+            self.pipeline = FacePipelineV2() if settings.USE_PIPELINE_V2 else FacePipeline()
         self.search_service = search_service
         if self.search_service is None and embedding_repo is not None:
             self.search_service = SearchService(embedding_repo)
@@ -127,15 +130,21 @@ class VerificationService:
 
         similarity = float(top_k[0]["similarity"])
 
-        if similarity >= THRESHOLD:
+        if similarity >= settings.HIGH_THRESHOLD:
             return {
                 "status": "match",
                 "user_id": top_k[0]["user_id"],
                 "similarity": similarity,
             }
 
+        if similarity <= settings.LOW_THRESHOLD:
+            return {
+                "status": "no_match",
+                "similarity": similarity,
+            }
+
         return {
-            "status": "no_match",
+            "status": "low_confidence",
             "similarity": similarity,
         }
 

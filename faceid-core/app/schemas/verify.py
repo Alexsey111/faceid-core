@@ -16,3 +16,4 @@ class VerifyResponse(BaseModel):
     user_id: Optional[Union[str, int]] = None
     similarity: Optional[float] = None
     liveness_passed: Optional[bool] = None
+    queue_wait_ms: Optional[float] = None
