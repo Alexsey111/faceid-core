@@ -17,8 +17,8 @@ x-worker-base: &worker-base
     - ASYNC_THROUGHPUT_PER_SEC=8
     - BACKPRESSURE_MAX_QUEUE_DELAY_MS=750
     - EMBED_BATCH_ENABLED=true
-    - EMBED_BATCH_SIZE=8
-    - EMBED_BATCH_TIMEOUT_MS=2
+    - EMBED_BATCH_SIZE=6
+    - EMBED_BATCH_TIMEOUT_MS=5
     - EMBED_BATCH_MAX_WAIT_GUARD_MS=50
     - FAISS_ENABLED=${FAISS_ENABLED:-true}
     - MINIO_ENDPOINT=minio:9000
@@ -104,8 +104,8 @@ services:
       - ASYNC_THROUGHPUT_PER_SEC=8
       - BACKPRESSURE_MAX_QUEUE_DELAY_MS=750
       - EMBED_BATCH_ENABLED=true
-      - EMBED_BATCH_SIZE=8
-      - EMBED_BATCH_TIMEOUT_MS=2
+      - EMBED_BATCH_SIZE=6
+      - EMBED_BATCH_TIMEOUT_MS=5
       - EMBED_BATCH_MAX_WAIT_GUARD_MS=50
       - FAISS_ENABLED=${FAISS_ENABLED:-true}
       - MINIO_ENDPOINT=minio:9000
@@ -123,7 +123,7 @@ services:
 
   worker_fast:
     <<: *worker-base
-    command: celery -A app.workers.celery_app worker -Q verify_fast --loglevel=info --concurrency=4 --pool=prefork
+    command: celery -A app.workers.celery_app worker -Q verify_fast --loglevel=info --concurrency=2 --pool=prefork
 
   worker_heavy:
     <<: *worker-base

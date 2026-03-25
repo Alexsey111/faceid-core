@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     # Face verification thresholds
     # -------------------------
     USE_PIPELINE_V2: bool = True
+    LIVENESS_ENABLED: bool = True
     FACE_MATCH_THRESHOLD: float = 0.6
     FACE_LOW_THRESHOLD: float = 0.3
     FACE_MARGIN_THRESHOLD: float = 0.1

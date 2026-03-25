@@ -9,6 +9,8 @@ from typing import Any
 
 import numpy as np
 
+from app.core.config import settings
+
 
 class BatchEncoder:
     """
@@ -45,10 +47,23 @@ class BatchEncoder:
         ready = threading.Event()
 
         with self._condition:
-            if len(self._queue) <= 1:
-                return self._encode_single_direct(face_crop)
-            self._queue.append((face_crop, result, ready, time.monotonic()))
-            self._condition.notify()
+            queue_is_small = len(self._queue) <= 1
+
+        if queue_is_small:
+            # Give batching a tiny chance to collect a neighbor under load.
+            if settings.EMBED_BATCH_ENABLED:
+                time.sleep(0.001)
+
+            with self._condition:
+                if len(self._queue) <= 1:
+                    return self._encode_single_direct(face_crop)
+
+                self._queue.append((face_crop, result, ready, time.monotonic()))
+                self._condition.notify()
+        else:
+            with self._condition:
+                self._queue.append((face_crop, result, ready, time.monotonic()))
+                self._condition.notify()
 
         ready.wait()
 

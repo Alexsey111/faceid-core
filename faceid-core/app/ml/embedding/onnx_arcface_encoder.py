@@ -36,20 +36,13 @@ class OnnxArcFaceEncoder:
             batch[idx] = np.transpose(img, (2, 0, 1))
         return batch
 
-    def normalize_batch(self, embeddings: np.ndarray) -> np.ndarray:
-        norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
-        norms = np.maximum(norms, 1e-8)
-        return embeddings / norms
-
     def _encode_single(self, face_crop: np.ndarray) -> np.ndarray:
         input_tensor = self.preprocess(face_crop)
         embedding = self.session.run(None, {
             self.input_name: input_tensor
         })[0][0]
         embedding = np.asarray(embedding, dtype=np.float32)
-        norm = np.linalg.norm(embedding)
-        if norm != 0:
-            embedding = embedding / norm
+        embedding = embedding / (np.linalg.norm(embedding) + 1e-8)
         return embedding
 
     def encode_batch(self, face_crops: Sequence[np.ndarray]) -> np.ndarray:
@@ -67,7 +60,8 @@ class OnnxArcFaceEncoder:
             return embeddings
 
         embeddings = np.asarray(embeddings, dtype=np.float32)
-        return self.normalize_batch(embeddings)
+        embedding = embeddings / (np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-8)
+        return embedding
 
     def encode(self, face_crop: np.ndarray) -> np.ndarray:
         return self._encode_single(face_crop)

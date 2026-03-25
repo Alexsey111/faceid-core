@@ -1,5 +1,8 @@
+# faceid-core\app\ml\pipeline_v2.py
+
 from pathlib import Path
 from typing import Dict, Any, Optional
+import logging
 import os
 import time
 
@@ -7,11 +10,17 @@ import cv2
 import numpy as np
 
 from app.core.config import settings
+from app.ml.batch_encoder import BatchEncoder
 from app.ml.dependencies import get_batch_encoder
+from app.ml.embedding.onnx_arcface_encoder import OnnxArcFaceEncoder
+from app.ml.liveness.antispoof_model import AntiSpoofModel
 from app.ml.preprocessing.image_preprocessor import ImagePreprocessor
 from app.ml.detection.fast_detector import FastFaceDetector
 from app.ml.detection.retinaface_detector import RetinaFaceDetector
 from app.ml.utils.face_align import align_face
+
+
+logger = logging.getLogger(__name__)
 
 
 class FacePipelineV2:
@@ -36,7 +45,8 @@ class FacePipelineV2:
 
         self.fast_detector: Optional[FastFaceDetector] = None
         self.detector: Optional[RetinaFaceDetector] = None
-        self.encoder: Optional[object] = None
+        self.encoder: BatchEncoder | OnnxArcFaceEncoder | None = None
+        self.liveness: Optional[AntiSpoofModel] = None
 
     def _init(self):
         if not self._initialized:
@@ -48,6 +58,9 @@ class FacePipelineV2:
             )
             self.detector = RetinaFaceDetector()
             self.encoder = get_batch_encoder()
+            model_path = Path(settings.MODELS_DIR) / "antispoof.onnx"
+            if settings.LIVENESS_ENABLED and model_path.exists():
+                self.liveness = AntiSpoofModel(str(model_path))
             self._initialized = True
 
     def process(self, image_bytes: bytes) -> Dict[str, Any]:
@@ -83,20 +96,25 @@ class FacePipelineV2:
             )
 
             roi = self._safe_crop(image, x1, y1, x2, y2)
-            detections = self.detector.detect(roi)
 
-            if detections and len(detections) == 1:
-                det = detections[0]
+            if confidence >= 0.85:
+                face_input = cv2.resize(roi, (112, 112))
+                bbox_source = "fast_only_high_conf"
+            else:
+                detections = self.detector.detect(roi)
 
-                if det.get("landmarks") is not None:
-                    face_input = align_face(roi, det["landmarks"])
-                    bbox_source = "fast+retina"
+                if detections and len(detections) == 1:
+                    det = detections[0]
+
+                    if det.get("landmarks") is not None:
+                        face_input = align_face(roi, det["landmarks"])
+                        bbox_source = "fast+retina"
+                    else:
+                        face_input = roi
+                        bbox_source = "fast_crop"
                 else:
                     face_input = roi
-                    bbox_source = "fast_crop"
-            else:
-                face_input = roi
-                bbox_source = "fast_only"
+                    bbox_source = "fast_only_fallback"
 
             detection = {
                 "bbox": [x1, y1, x2, y2],
@@ -137,19 +155,31 @@ class FacePipelineV2:
         if face_input.shape[:2] != (112, 112):
             face_input = cv2.resize(face_input, (112, 112))
 
+        if face_input.mean() < 5:
+            raise ValueError("Invalid face crop (too dark)")
+
+        face_input = np.ascontiguousarray(face_input, dtype=np.uint8)
+
+        liveness_passed = None
+        if settings.LIVENESS_ENABLED and self.liveness:
+            try:
+                score = self.liveness.predict(face_input)
+                liveness_passed = score > 0.5
+            except Exception:
+                liveness_passed = None
+
         t0 = time.time()
         embedding = self.encoder.encode(face_input)
-        norm = np.linalg.norm(embedding)
-        if not (0.99 <= norm <= 1.01):
-            embedding = embedding / (norm + 1e-8)
         timings["encode_ms"] = (time.time() - t0) * 1000
 
         timings["total_pipeline_ms"] = sum(timings.values())
+        logger.debug("bbox_source=%s", bbox_source)
 
         return {
             "embedding": embedding,
             "bbox": detection["bbox"],
             "landmarks": detection.get("landmarks"),
+            "liveness_passed": liveness_passed,
             "bbox_source": bbox_source,
             "timings": timings,
         }
