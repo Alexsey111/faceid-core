@@ -73,10 +73,10 @@ class Settings(BaseSettings):
     # -------------------------
     USE_PIPELINE_V2: bool = True
     LIVENESS_ENABLED: bool = True
+    LIVENESS_THRESHOLD: float = 0.5
     FACE_MATCH_THRESHOLD: float = 0.6
     FACE_LOW_THRESHOLD: float = 0.3
     FACE_MARGIN_THRESHOLD: float = 0.1
-    LIVENESS_THRESHOLD: float = 0.7
     HIGH_THRESHOLD: float = 0.60
     LOW_THRESHOLD: float = 0.30
     MARGIN_THRESHOLD: float = 0.10

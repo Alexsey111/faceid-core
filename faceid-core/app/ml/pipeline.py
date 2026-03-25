@@ -11,6 +11,8 @@ from app.core.config import settings
 from app.ml.preprocessing.image_preprocessor import ImagePreprocessor
 from app.ml.detection.retinaface_detector import RetinaFaceDetector
 from app.ml.liveness.antispoof_model import AntiSpoofModel
+from app.ml.liveness.onnx_liveness import OnnxLivenessChecker
+from app.ml.liveness.model_paths import resolve_liveness_model_path
 from app.ml.embedding.arcface_encoder import ArcFaceEncoder
 
 
@@ -27,6 +29,7 @@ class FacePipeline:
         self.detector: Optional[RetinaFaceDetector] = None
         self.encoder: Optional[ArcFaceEncoder] = None
         self.liveness: Optional[AntiSpoofModel] = None
+        self.liveness_checker: Optional[OnnxLivenessChecker] = None
 
     def _init(self):
         if not self._initialized:
@@ -34,9 +37,15 @@ class FacePipeline:
             self.encoder = ArcFaceEncoder()
 
             # Liveness model is optional
-            model_path = Path(settings.MODELS_DIR) / "antispoof.onnx"
-            if model_path.exists():
+            model_path = resolve_liveness_model_path(settings.MODELS_DIR)
+            if model_path is not None:
                 self.liveness = AntiSpoofModel(str(model_path))
+
+            if model_path is not None:
+                self.liveness_checker = OnnxLivenessChecker(
+                    model_path=str(model_path),
+                    threshold=settings.LIVENESS_THRESHOLD,
+                )
 
             self._initialized = True
 

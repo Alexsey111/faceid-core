@@ -18,6 +18,8 @@ try:
         VERIFY_LATENCY,
         VERIFY_RESULT_COUNTER,
         LIVENESS_RESULT_COUNTER,
+        LIVENESS_FAIL_COUNT,
+        LIVENESS_MS,
         PIPELINE_STAGE_DURATION,
         PIPELINE_MS,
         DETECT_MS,
@@ -71,6 +73,8 @@ def _observe_pipeline_metrics(pipeline_time: dict[str, Any]) -> None:
             DETECT_MS.observe(detect_ms)
         if "encode_ms" in pipeline_time:
             ENCODE_MS.observe(float(pipeline_time["encode_ms"]))
+        if "liveness_ms" in pipeline_time:
+            LIVENESS_MS.observe(float(pipeline_time["liveness_ms"]))
     except Exception:
         pass
 
@@ -122,6 +126,19 @@ class VerificationService:
 
     def extract_features(self, image_bytes: bytes) -> dict:
         result = self.pipeline.process(image_bytes)
+
+        if result.get("status") == "spoof":
+            liveness_score = result.get("liveness_score", result.get("confidence"))
+            LIVENESS_FAIL_COUNT.inc()
+            return {
+                "status": "spoof",
+                "liveness_passed": False,
+                "liveness": {
+                    "score": liveness_score,
+                    "risk": "spoof",
+                },
+                "timings": result.get("timings", {}),
+            }
 
         embedding = np.asarray(result["embedding"], dtype=np.float32)
         norm = np.linalg.norm(embedding)
@@ -299,6 +316,34 @@ class VerificationService:
                 "replay_detected": replay_detected
             }
 
+        if features.get("status") == "spoof":
+            liveness = features["liveness"]
+            liveness_score = float(liveness.get("score", 0.0))
+            liveness_risk = liveness.get("risk", "spoof")
+
+            await verification_repo.create_log(
+                user_id=user_id_int,
+                similarity=0.0,
+                success=False,
+                margin=None,
+                liveness_score=liveness_score,
+                is_genuine=None
+            )
+            _record_verify_result("spoof_detected")
+            _record_liveness_result(False)
+            LIVENESS_FAIL_COUNT.inc()
+            _observe_verify_latency(t_start)
+
+            return {
+                "status": "spoof",
+                "liveness_passed": False,
+                "liveness": {
+                    "score": liveness_score,
+                    "risk": liveness_risk,
+                },
+                "replay_detected": replay_detected,
+            }
+
         embedding = features["embedding"]
         liveness_signals = features["liveness"]
         pipeline_time = features["timings"]
@@ -339,10 +384,11 @@ class VerificationService:
             )
             _record_verify_result("spoof_detected")
             _record_liveness_result(False)
+            LIVENESS_FAIL_COUNT.inc()
             _observe_verify_latency(t_start)
 
             return {
-                "status": "spoof_detected",
+                "status": "spoof",
                 "liveness_passed": False,
                 "liveness": {
                     "score": liveness_score,

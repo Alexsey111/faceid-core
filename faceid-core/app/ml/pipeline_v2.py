@@ -13,7 +13,8 @@ from app.core.config import settings
 from app.ml.batch_encoder import BatchEncoder
 from app.ml.dependencies import get_batch_encoder
 from app.ml.embedding.onnx_arcface_encoder import OnnxArcFaceEncoder
-from app.ml.liveness.antispoof_model import AntiSpoofModel
+from app.ml.liveness.onnx_liveness import OnnxLivenessChecker
+from app.ml.liveness.model_paths import resolve_liveness_model_path
 from app.ml.preprocessing.image_preprocessor import ImagePreprocessor
 from app.ml.detection.fast_detector import FastFaceDetector
 from app.ml.detection.retinaface_detector import RetinaFaceDetector
@@ -46,7 +47,7 @@ class FacePipelineV2:
         self.fast_detector: Optional[FastFaceDetector] = None
         self.detector: Optional[RetinaFaceDetector] = None
         self.encoder: BatchEncoder | OnnxArcFaceEncoder | None = None
-        self.liveness: Optional[AntiSpoofModel] = None
+        self.liveness_checker: Optional[OnnxLivenessChecker] = None
 
     def _init(self):
         if not self._initialized:
@@ -58,9 +59,18 @@ class FacePipelineV2:
             )
             self.detector = RetinaFaceDetector()
             self.encoder = get_batch_encoder()
-            model_path = Path(settings.MODELS_DIR) / "antispoof.onnx"
-            if settings.LIVENESS_ENABLED and model_path.exists():
-                self.liveness = AntiSpoofModel(str(model_path))
+            if settings.LIVENESS_ENABLED:
+                liveness_path = resolve_liveness_model_path(settings.MODELS_DIR)
+
+                if liveness_path is not None:
+                    logger.info("liveness model loaded from %s", liveness_path)
+                    self.liveness_checker = OnnxLivenessChecker(
+                        str(liveness_path),
+                        threshold=settings.LIVENESS_THRESHOLD,
+                    )
+                else:
+                    logger.warning("liveness model not found, disabled")
+                    self.liveness_checker = None
             self._initialized = True
 
     def process(self, image_bytes: bytes) -> Dict[str, Any]:
@@ -161,25 +171,58 @@ class FacePipelineV2:
         face_input = np.ascontiguousarray(face_input, dtype=np.uint8)
 
         liveness_passed = None
-        if settings.LIVENESS_ENABLED and self.liveness:
+        liveness_score = None
+        if settings.LIVENESS_ENABLED and self.liveness_checker:
             try:
-                score = self.liveness.predict(face_input)
-                liveness_passed = score > 0.5
-            except Exception:
+                t0 = time.time()
+                liveness_passed, liveness_score = self.liveness_checker.predict(face_input)
+                timings["liveness_ms"] = (time.time() - t0) * 1000
+
+                # --- FAIL FAST ---
+                if liveness_passed is False:
+                    timings["total_pipeline_ms"] = sum(timings.values())
+
+                    return {
+                        "status": "spoof",
+                        "liveness_passed": False,
+                        "liveness_score": liveness_score,
+                        "bbox": detection["bbox"],
+                        "landmarks": detection.get("landmarks"),
+                        "bbox_source": bbox_source,
+                        "timings": timings,
+                    }
+
+            except Exception as e:
+                logger.warning("liveness_error: %s", str(e))
+
+                # FAIL-OPEN: do not break the pipeline
                 liveness_passed = None
+                liveness_score = None
 
         t0 = time.time()
         embedding = self.encoder.encode(face_input)
         timings["encode_ms"] = (time.time() - t0) * 1000
 
+        if "liveness_ms" in timings and timings["liveness_ms"] > timings["encode_ms"]:
+            logger.warning(
+                "liveness_slower_than_encode liveness_ms=%.3f encode_ms=%.3f bbox_source=%s",
+                timings["liveness_ms"],
+                timings["encode_ms"],
+                bbox_source,
+            )
+        if timings.get("liveness_ms", 0.0) > 50:
+            logger.warning("slow_liveness_ms=%.2f", timings["liveness_ms"])
+
         timings["total_pipeline_ms"] = sum(timings.values())
         logger.debug("bbox_source=%s", bbox_source)
 
         return {
+            "status": "ok",
             "embedding": embedding,
             "bbox": detection["bbox"],
             "landmarks": detection.get("landmarks"),
             "liveness_passed": liveness_passed,
+            "liveness_score": liveness_score,
             "bbox_source": bbox_source,
             "timings": timings,
         }

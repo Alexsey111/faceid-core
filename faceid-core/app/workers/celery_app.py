@@ -1,9 +1,12 @@
 # faceid-core\app\workers\celery_app.py
 
 import logging
+import os
 
 from celery import Celery
+from celery.signals import worker_ready
 from kombu import Queue
+from prometheus_client import start_http_server
 from app.core.config import settings
 
 logging.getLogger("insightface").setLevel(logging.WARNING)
@@ -45,3 +48,18 @@ celery_app.conf.update(
     task_time_limit=25,
     task_soft_time_limit=15,
 )
+
+_metrics_server_started = False
+
+
+@worker_ready.connect
+def _start_metrics_server(**_kwargs) -> None:
+    global _metrics_server_started
+
+    if _metrics_server_started:
+        return
+
+    port = int(os.getenv("PROMETHEUS_METRICS_PORT", "9100"))
+    start_http_server(port)
+    _metrics_server_started = True
+    logging.getLogger(__name__).info("prometheus_metrics_server_started port=%s", port)

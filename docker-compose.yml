@@ -123,10 +123,14 @@ services:
 
   worker_fast:
     <<: *worker-base
+    ports:
+      - "9101:9100"
     command: celery -A app.workers.celery_app worker -Q verify_fast --loglevel=info --concurrency=2 --pool=prefork
 
   worker_heavy:
     <<: *worker-base
+    ports:
+      - "9102:9100"
     command: celery -A app.workers.celery_app worker -Q verify_heavy --loglevel=info --concurrency=4 --pool=prefork
 
   prometheus:

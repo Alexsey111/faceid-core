@@ -27,7 +27,7 @@ from app.services.liveness_service import LivenessService
 from app.services.search_service import SearchService
 from app.services.verification_service import VerificationService
 try:
-    from app.monitoring.metrics import QUEUE_DELAY_MS, PIPELINE_MS, DETECT_MS, ENCODE_MS
+    from app.monitoring.metrics import QUEUE_DELAY_MS, PIPELINE_MS, DETECT_MS, ENCODE_MS, LIVENESS_MS, LIVENESS_FAIL_COUNT
     METRICS_ENABLED = True
 except Exception:
     METRICS_ENABLED = False
@@ -120,6 +120,8 @@ def _observe_worker_pipeline_metrics(timings: dict) -> None:
             DETECT_MS.observe(detect_ms)
         if "encode_ms" in timings:
             ENCODE_MS.observe(float(timings["encode_ms"]))
+        if "liveness_ms" in timings:
+            LIVENESS_MS.observe(float(timings["liveness_ms"]))
     except Exception:
         pass
 
@@ -215,6 +217,59 @@ async def _process_verify_job(
         features = service.extract_features(image_bytes)
         logger.warning("job_id=%s ml=%.3fs", job_id, time.time() - t0)
         _observe_worker_pipeline_metrics(features["timings"])
+        logger.info(
+            "liveness_ms=%.3f encode_ms=%.3f bbox_source=%s",
+            float(features["timings"].get("liveness_ms", -1)),
+            float(features["timings"].get("encode_ms", -1)),
+            features.get("bbox_source"),
+        )
+
+        if features.get("status") == "spoof":
+            liveness = features["liveness"]
+            liveness_score = float(liveness.get("score", 0.0))
+            liveness_risk = liveness.get("risk", "spoof")
+            if METRICS_ENABLED:
+                try:
+                    LIVENESS_FAIL_COUNT.inc()
+                except Exception:
+                    pass
+
+            result = {
+                "status": "spoof",
+                "liveness_passed": False,
+                "liveness": {
+                    "score": liveness_score,
+                    "risk": liveness_risk,
+                },
+                "replay_detected": False,
+            }
+
+            async with AsyncSessionLocal() as db:
+                verification_repo = VerificationRepository(db)
+                await verification_repo.create_log(
+                    user_id=int(user_id) if user_id else None,
+                    similarity=0.0,
+                    success=False,
+                    margin=None,
+                    liveness_score=liveness_score,
+                    is_genuine=None,
+                    commit=False,
+                )
+
+                job_repo = VerificationJobRepository(db)
+                await job_repo.update(
+                    job_id,
+                    status=JobStatus.done,
+                    user_id=int(user_id) if user_id else None,
+                    similarity=0.0,
+                    liveness_score=liveness_score,
+                    is_genuine=False,
+                    commit=False,
+                )
+
+                await db.commit()
+
+            return result
 
         # optional liveness gate before search/decision
         liveness_passed = LivenessService.is_passed(features["liveness"])
@@ -229,8 +284,13 @@ async def _process_verify_job(
         log_is_genuine: bool | None = None
 
         if require_liveness and not liveness_passed:
+            if METRICS_ENABLED:
+                try:
+                    LIVENESS_FAIL_COUNT.inc()
+                except Exception:
+                    pass
             result = {
-                "status": "spoof_detected",
+                "status": "spoof",
                 "liveness_passed": False,
                 "liveness": {
                     "score": liveness_score,

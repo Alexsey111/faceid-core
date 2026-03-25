@@ -10,6 +10,8 @@ os.environ["MKL_NUM_THREADS"] = "1"
 os.environ["OPENBLAS_NUM_THREADS"] = "1"
 
 import onnxruntime as ort
+
+from app.ml.liveness.model_paths import resolve_liveness_model_path
 from insightface.app import FaceAnalysis
 
 from app.core.config import settings
@@ -112,9 +114,9 @@ def get_face_app() -> FaceAnalysis:
 @lru_cache(maxsize=1)
 def get_liveness_model():
 
-    model_path = MODELS_DIR / "antispoof.onnx"
+    model_path = resolve_liveness_model_path(MODELS_DIR)
 
-    if not model_path.exists():
+    if model_path is None:
         return None
 
     sess_options = _make_session_options()

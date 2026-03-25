@@ -52,6 +52,11 @@ LIVENESS_RESULT_COUNTER = Counter(
     ["result"],
 )
 
+LIVENESS_FAIL_COUNT = Counter(
+    "faceid_liveness_fail_total",
+    "Failed liveness checks",
+)
+
 SEARCH_BACKEND_COUNTER = Counter(
     "faceid_search_backend_total",
     "Search backend usage",
@@ -104,6 +109,12 @@ ENCODE_MS = Histogram(
     "faceid_encode_ms",
     "Face embedding extraction time",
     buckets=[1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000],
+)
+
+LIVENESS_MS = Histogram(
+    "faceid_liveness_ms",
+    "Passive liveness check time",
+    buckets=[1, 2, 5, 10, 20, 50, 100, 200, 500, 1000],
 )
 
 DB_QUERY_TIME_MS = Histogram(

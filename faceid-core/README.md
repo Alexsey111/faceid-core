@@ -33,6 +33,28 @@ Important:
 - it is the protection mechanism that keeps queue delay from growing without bound
 - this behavior is part of the design, not a temporary workaround
 
+### Passive liveness artifact
+
+Canonical model file:
+
+- `models/liveness.onnx`
+
+Legacy-compatible fallback:
+
+- `models/antispoof.onnx`
+
+Runtime behavior:
+
+- Prefer `liveness.onnx`
+- Fall back to `antispoof.onnx`
+- Disable liveness gracefully if neither file exists
+
+Recommended deployment flow:
+
+1. Copy the ONNX model into `models/liveness.onnx`
+2. Rebuild and restart the stack
+3. Verify the worker metrics endpoint exposes `faceid_liveness_ms_*`
+
 ### Operational load bands
 
 The async path is intentionally tuned around the following load bands:
