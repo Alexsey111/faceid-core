@@ -1,17 +1,13 @@
-# FaceID Core — Pipeline V2 (Async + Batching + Scaling)
+# FaceID Core — Pipeline V3 (Liveness + Observability)
 
 ## 📌 Обзор
 
-Данная ветка содержит **оптимизированную production-ready версию FaceID Core**.
+Данная ветка расширяет `pipeline-v2` и фиксирует:
 
-В отличие от baseline (`main`), здесь реализованы:
-
-* ✅ Асинхронная обработка (Celery)
-* ✅ Очередь задач (/verify_async)
-* ✅ Backpressure (контроль нагрузки)
-* ✅ Micro-batching для inference
-* ✅ Метрики (pipeline, DB, queue)
-* ✅ Масштабируемая архитектура
+* ✅ Встроенный **liveness (anti-spoof)**
+* ✅ Production-ready ONNX модель (quantized)
+* ✅ Наблюдаемость (latency через logs + worker metrics)
+* ✅ Подтверждённый SLA под нагрузкой
 
 ---
 
@@ -25,123 +21,156 @@ Client → API → Queue → Worker → ML Pipeline → DB → Response
 
 ---
 
-### ML pipeline (V2)
+### ML pipeline (V3)
 
 ```text
 Image
   → Preprocess
-  → Fast detector (cheap)
-  → RetinaFace fallback (при необходимости)
-  → Batch encoder (ArcFace ONNX)
+  → Fast detector
+  → RetinaFace fallback
+  → Crop / Align
+  → Liveness (ONNX, anti-spoof)
+      ↳ если spoof → early exit
+  → Batch encoder (ArcFace)
   → Normalize
-  → Search (FAISS / pgvector / CPU fallback)
+  → Search (FAISS / pgvector / CPU)
   → Decision
 ```
 
 ---
 
-## ⚙️ Ключевые компоненты
+## ⚙️ Liveness (Anti-Spoof)
 
-### 1. Async API
-
-* `/verify_async` — основной endpoint
-* Быстро отвечает (task_id)
-* Основная работа уходит в worker
-
----
-
-### 2. Workers (Celery)
-
-* `worker_fast` — основной поток обработки
-* `worker_heavy` — резерв / тяжёлые задачи
-* pool: **prefork (стабильный режим)**
-
----
-
-### 3. Micro-batching
-
-* Объединяет несколько запросов в один inference
-* Настройки:
-
-```env
-EMBED_BATCH_ENABLED=true
-EMBED_BATCH_SIZE=8
-EMBED_BATCH_TIMEOUT_MS=2
-EMBED_BATCH_MAX_WAIT_GUARD_MS=50
-```
-
----
-
-### 4. Backpressure
-
-Контролирует входящий поток:
+### Используемая модель
 
 ```text
-если estimated_queue_delay > threshold → 429
+models/liveness.onnx
+(best_model_quantized.onnx)
 ```
 
-Текущий threshold:
+---
+
+### Причины выбора
 
 ```text
-~750 ms
+✔ низкая latency (CPU-friendly)
+✔ quantized (минимальная нагрузка)
+✔ подходит для single-image сценария
+✔ стабильная работа в production
 ```
 
 ---
 
-### 5. Поиск
+### Preprocessing
 
-Layered search:
-
-1. FAISS (in-memory)
-2. pgvector (Postgres)
-3. CPU fallback
+```text
+input: 128x128
+color: RGB
+dtype: float32
+```
 
 ---
 
-### 6. Анти-реплей (Redis)
+### Output
 
-* Защита от повторных запросов
-* Не блокирует pipeline при недоступности Redis
+```text
+[real_score, spoof_score]
+```
+
+---
+
+### Decision
+
+```text
+liveness_passed = real_score > threshold
+```
+
+---
+
+### Поведение pipeline
+
+```text
+если spoof:
+→ pipeline завершается
+→ encode НЕ вызывается
+→ экономия CPU
+```
+
+---
+
+## 📊 Liveness Performance
+
+```text
+avg: ~10 ms
+p50: ~7.5 ms
+p95: <16 ms
+```
+
+---
+
+### Относительно encoder
+
+```text
+liveness ≈ 8% от encode latency
+```
+
+---
+
+### Сравнение
+
+```text
+encode avg: ~125 ms
+liveness avg: ~10 ms
+```
+
+---
+
+## 🎯 Вывод
+
+```text
+✔ liveness НЕ является bottleneck
+✔ безопасно держать ALWAYS ON
+✔ SLA не деградирует
+```
 
 ---
 
 ## 📊 Метрики
 
-Реализованы:
-
-* `queue_delay_ms`
-* `pipeline_ms`
-* `detect_ms`
-* `encode_ms`
-* `db_query_time_ms`
-
----
-
-⚠️ Важно:
-
-* API `/metrics` доступен
-* Worker-метрики требуют отдельного экспорта (Prometheus/Grafana)
-
----
-
-## 📈 Производительность
-
-### После оптимизаций (пример)
-
-| RATE | avg latency | p95 latency | queue_delay avg | 429   |
-| ---- | ----------- | ----------- | --------------- | ----- |
-| 2    | ~12 ms      | ~22 ms      | ~<1s            | ~0%   |
-| 5    | ~23 ms      | ~100 ms     | ~1–2s           | ~2–5% |
-| 8    | ~25 ms      | ~80 ms      | растёт          | ~3%   |
-
----
-
-### SLA (цель)
+### Доступны:
 
 ```text
-queue_delay_ms:
-avg < 1000 ms
-p95 < 2000 ms
+queue_delay_ms
+pipeline_ms
+detect_ms
+encode_ms
+liveness_ms (через logs)
+```
+
+---
+
+### Важно
+
+```text
+liveness_ms считается в worker
+не виден в API /metrics
+```
+
+---
+
+### Текущий подход
+
+```text
+✔ логирование (worker logs)
+✔ ручная агрегация p50/p95
+```
+
+---
+
+### Причина
+
+```text
+Celery prefork ≠ Prometheus multiprocess (из коробки)
 ```
 
 ---
@@ -160,69 +189,94 @@ docker compose up --build
 pytest -q
 ```
 
-✔ 45 passed
-✔ Отдельная test DB
-✔ Alembic миграции автоматически
+---
+
+## 📈 Производительность (после V3)
+
+```text
+e2e_latency:
+avg ~270 ms
+p95 ~540 ms
+
+429:
+0%
+```
 
 ---
 
-## ⚠️ Текущие ограничения
+## ⚠️ Ограничения
 
-* Bottleneck: **CPU detector (RetinaFace)**
-* Worker может перегружаться при RATE > 5
-* SLA пока на границе (degraded режим)
-* Worker scaling ограничен одним узлом
-
----
-
-## 🎯 Где используется
-
-* Production API
-* Нагрузочное тестирование
-* Scaling эксперименты
-* Feature development
+```text
+• основной bottleneck — encoder (ArcFace)
+• RetinaFace fallback дорогой
+• worker scaling пока горизонтально ограничен
+• полноценный Prometheus multiprocess не реализован
+```
 
 ---
 
-## 🔄 Отличия от baseline
+## 🧭 Roadmap (V3 → V4)
 
-| Фича            | main | pipeline-v2 |
-| --------------- | ---- | ----------- |
-| Async           | ❌    | ✅           |
-| Очередь         | ❌    | ✅           |
-| Batching        | ❌    | ✅           |
-| Backpressure    | ❌    | ✅           |
-| Метрики         | ❌    | ✅           |
-| Масштабирование | ❌    | ✅           |
+### 1. Detector optimization (приоритет №1)
+
+```text
+уменьшить RetinaFace вызовы
+→ рост производительности 20–40%
+```
 
 ---
 
-## 🧭 Roadmap
+### 2. Autoscaling workers
 
-Следующие шаги:
+```text
+динамическое масштабирование worker_fast
+```
 
-1. Оптимизация detector (уменьшить Retina вызовы)
-2. Тюнинг batching (latency vs throughput)
-3. Redis cache для embeddings
-4. Горизонтальное масштабирование workers
-5. Полный мониторинг (Grafana)
+---
+
+### 3. Embedding cache (Redis)
+
+```text
+ускорение повторных запросов
+```
+
+---
+
+### 4. Полный мониторинг
+
+```text
+Prometheus multiprocess / sidecar exporter
+```
 
 ---
 
 ## 📌 Статус
 
 ```text
-Production-ready (degraded SLA under load)
+Production-ready
+SLA соблюдается
+Security layer (liveness) включён
 ```
 
 ---
 
 ## ❗ Важно
 
-* Эта ветка — **основная для развития**
-* Изменения вносить через новые feature-ветки
-* Перед правками:
+```text
+• liveness обязателен (ALWAYS ON)
+• изменения через feature-ветки
+• перед правками — запрашивать текущий код
+• соблюдать существующую архитектуру
+```
 
-  * запрашивать текущий код
-  * соблюдать архитектуру
-  * не ломать API-контракты
+---
+
+# 🧠 Короткий итог ветки
+
+```text
+V2 → scalable pipeline
+V3 → secure pipeline (liveness) + validated SLA
+```
+
+
+
