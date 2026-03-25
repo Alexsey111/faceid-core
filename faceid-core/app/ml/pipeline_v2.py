@@ -7,10 +7,10 @@ import cv2
 import numpy as np
 
 from app.core.config import settings
+from app.ml.dependencies import get_batch_encoder
 from app.ml.preprocessing.image_preprocessor import ImagePreprocessor
 from app.ml.detection.fast_detector import FastFaceDetector
 from app.ml.detection.retinaface_detector import RetinaFaceDetector
-from app.ml.embedding.onnx_arcface_encoder import OnnxArcFaceEncoder
 from app.ml.utils.face_align import align_face
 
 
@@ -36,7 +36,7 @@ class FacePipelineV2:
 
         self.fast_detector: Optional[FastFaceDetector] = None
         self.detector: Optional[RetinaFaceDetector] = None
-        self.encoder: Optional[OnnxArcFaceEncoder] = None
+        self.encoder: Optional[object] = None
 
     def _init(self):
         if not self._initialized:
@@ -47,7 +47,7 @@ class FacePipelineV2:
                 config_path=str(fast_config),
             )
             self.detector = RetinaFaceDetector()
-            self.encoder = OnnxArcFaceEncoder()
+            self.encoder = get_batch_encoder()
             self._initialized = True
 
     def process(self, image_bytes: bytes) -> Dict[str, Any]:

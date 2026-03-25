@@ -1,6 +1,7 @@
 # app/core/config.py
 
 import base64
+import math
 
 from functools import lru_cache
 from pydantic import field_validator
@@ -93,10 +94,21 @@ class Settings(BaseSettings):
     CELERY_RESULT_BACKEND: str = "redis://redis:6379/0"
     CELERY_TASK_QUEUE: str = "faceid"
     WORKER_COUNT: int = 3
+    ACTIVE_TASKS_MULTIPLIER: float = 1.25
+    ASYNC_THROUGHPUT_PER_SEC: float = 8.0
+    BACKPRESSURE_MAX_QUEUE_DELAY_MS: float = 750.0
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT: int = 30
+    DB_POOL_RECYCLE: int = 1800
+    EMBED_BATCH_ENABLED: bool = True
+    EMBED_BATCH_SIZE: int = 8
+    EMBED_BATCH_TIMEOUT_MS: float = 2.0
+    EMBED_BATCH_MAX_WAIT_GUARD_MS: float = 50.0
 
     @property
     def MAX_ACTIVE_TASKS(self) -> int:
-        return self.WORKER_COUNT * 2
+        return max(1, math.ceil(self.WORKER_COUNT * self.ACTIVE_TASKS_MULTIPLIER))
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

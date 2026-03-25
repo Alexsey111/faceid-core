@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Upl
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.verification_job_repo import VerificationJobRepository
+from app.core.config import settings
 from app.db.session import get_db
 from app.infrastructure.minio_client import MinioClient
 from app.infrastructure.redis_client import redis_client
@@ -31,6 +32,14 @@ logger = logging.getLogger(__name__)
 MAX_IMAGE_SIZE = 5 * 1024 * 1024
 
 
+def _normalize_priority(value: str | None) -> tuple[str, int]:
+    priority = (value or "high").strip().lower()
+    if priority not in {"high", "low"}:
+        raise HTTPException(status_code=400, detail="Invalid priority")
+
+    return priority, 9 if priority == "high" else 0
+
+
 async def _enqueue_verify_job(
     *,
     db: AsyncSession,
@@ -41,6 +50,7 @@ async def _enqueue_verify_job(
     content_type: str,
     user_id: str | None,
     require_liveness: bool,
+    priority: str,
 ) -> None:
     job_repo = VerificationJobRepository(db)
     await job_repo.create(job_id=job_id, status=JobStatus.pending)
@@ -48,6 +58,7 @@ async def _enqueue_verify_job(
 
     minio_client = MinioClient()
     queue_name = "verify_heavy" if require_liveness else "verify_fast"
+    priority_name, celery_priority = _normalize_priority(priority)
 
     try:
         await asyncio.to_thread(
@@ -65,6 +76,7 @@ async def _enqueue_verify_job(
                 "request_received_time": request_received_time,
             },
             queue=queue_name,
+            priority=celery_priority,
         )
     except Exception as exc:
         await job_repo.update(job_id, status=JobStatus.failed, error=str(exc))
@@ -73,7 +85,12 @@ async def _enqueue_verify_job(
 
     logger.info(
         "verify_async_enqueued",
-        extra={"job_id": job_id, "image_url": object_name, "queue": queue_name},
+        extra={
+            "job_id": job_id,
+            "image_url": object_name,
+            "queue": queue_name,
+            "priority": priority_name,
+        },
     )
 
 
@@ -136,11 +153,12 @@ async def verify_async(
     file: UploadFile = File(...),
     user_id: Optional[str] = Query(None),
     require_liveness: bool = Query(False),
+    priority: str = Query("high"),
     db: AsyncSession = Depends(get_db),
 ):
     """Production async verify: file -> MinIO -> queue -> worker."""
-    if not try_reserve_slot():
-        raise HTTPException(status_code=429, detail="Backpressure: active_limit")
+    if not try_reserve_slot(max_queue_delay_ms=float(settings.BACKPRESSURE_MAX_QUEUE_DELAY_MS)):
+        raise HTTPException(status_code=429, detail="Backpressure: queue_delay_sla")
 
     try:
         await asyncio.to_thread(RateLimiter.check, http_request, "verify_async", 5)
@@ -167,6 +185,7 @@ async def verify_async(
             content_type=file.content_type or "image/jpeg",
             user_id=user_id,
             require_liveness=require_liveness,
+            priority=priority,
         )
 
         return {
@@ -182,11 +201,12 @@ async def verify_async(
 async def verify_async_base64(
     request: VerifyRequest,
     http_request: Request,
+    priority: str = Query("high"),
     db: AsyncSession = Depends(get_db),
 ):
     """Async verify via queue/workers for real load."""
-    if not try_reserve_slot():
-        raise HTTPException(status_code=429, detail="Backpressure: active_limit")
+    if not try_reserve_slot(max_queue_delay_ms=float(settings.BACKPRESSURE_MAX_QUEUE_DELAY_MS)):
+        raise HTTPException(status_code=429, detail="Backpressure: queue_delay_sla")
 
     try:
         await asyncio.to_thread(RateLimiter.check, http_request, "verify_async", 5)
@@ -212,6 +232,7 @@ async def verify_async_base64(
             content_type="image/jpeg",
             user_id=request.user_id,
             require_liveness=request.require_liveness,
+            priority=priority,
         )
 
         return {

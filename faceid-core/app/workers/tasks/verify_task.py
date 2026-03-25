@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import time
+import threading
 
 import cv2
 import numpy as np
@@ -17,6 +18,7 @@ from app.db.repositories.verification_repo import VerificationRepository
 from app.db.session import AsyncSessionLocal
 from app.core.config import settings
 from app.ml.pipeline import FacePipeline
+from app.ml.pipeline_v2 import FacePipelineV2
 from app.infrastructure.minio_client import MinioClient
 from app.infrastructure.redis_client import redis_client
 from app.models.verification_job import JobStatus
@@ -24,28 +26,31 @@ from app.services.backpressure import decrement_active
 from app.services.liveness_service import LivenessService
 from app.services.search_service import SearchService
 from app.services.verification_service import VerificationService
+try:
+    from app.monitoring.metrics import QUEUE_DELAY_MS, PIPELINE_MS, DETECT_MS, ENCODE_MS
+    METRICS_ENABLED = True
+except Exception:
+    METRICS_ENABLED = False
 from celery.signals import worker_process_init
 from app.workers.celery_app import celery_app as app
 
 logger = logging.getLogger(__name__)
 JOB_RESULT_TTL = 300
-_pipeline: FacePipeline | None = None
-_worker_loop: asyncio.AbstractEventLoop | None = None
+_pipeline: FacePipeline | FacePipelineV2 | None = None
 _pipeline_warmed_up: bool = False
+_thread_local = threading.local()
 
 
-def get_pipeline() -> FacePipeline:
+def get_pipeline() -> FacePipeline | FacePipelineV2:
     global _pipeline
     if _pipeline is None:
-        _pipeline = FacePipeline()
+        print(f"USE_PIPELINE_V2={settings.USE_PIPELINE_V2}", flush=True)
+        if settings.USE_PIPELINE_V2:
+            _pipeline = FacePipelineV2()
+        else:
+            _pipeline = FacePipeline()
+        print(f"Using pipeline: {type(_pipeline).__name__}", flush=True)
     return _pipeline
-
-
-def get_worker_loop() -> asyncio.AbstractEventLoop:
-    global _worker_loop
-    if _worker_loop is None or _worker_loop.is_closed():
-        _worker_loop = asyncio.new_event_loop()
-    return _worker_loop
 
 
 def _make_dummy_image_bytes() -> bytes:
@@ -64,11 +69,26 @@ def warmup_pipeline() -> None:
     try:
         # TEMP: only initialize the pipeline here.
         # Running a dummy image through detection is noisy because it has no face.
-        get_pipeline()._init()
+        pipeline = get_pipeline()
+        if hasattr(pipeline, "_init"):
+            pipeline._init()
         _pipeline_warmed_up = True
         logger.info("pipeline_warmup_completed")
     except Exception as exc:
         logger.warning("pipeline_warmup_failed: %s", exc)
+
+
+def _get_loop() -> asyncio.AbstractEventLoop:
+    if not hasattr(_thread_local, "loop") or _thread_local.loop.is_closed():
+        _thread_local.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_thread_local.loop)
+    return _thread_local.loop
+
+
+def run_worker_coroutine(coro):
+    loop = _get_loop()
+    asyncio.set_event_loop(loop)
+    return loop.run_until_complete(coro)
 
 
 @worker_process_init.connect
@@ -79,6 +99,27 @@ def _on_worker_process_init(**_kwargs) -> None:
 def _cache_job_result(job_id: str, payload: dict) -> None:
     try:
         redis_client.setex(f"job:{job_id}", json.dumps(payload), ttl=JOB_RESULT_TTL)
+    except Exception:
+        pass
+
+
+def _observe_worker_pipeline_metrics(timings: dict) -> None:
+    if not METRICS_ENABLED:
+        return
+
+    try:
+        if "total_pipeline_ms" in timings:
+            PIPELINE_MS.observe(float(timings["total_pipeline_ms"]))
+        detect_ms = 0.0
+        if "detect_ms" in timings:
+            detect_ms = float(timings["detect_ms"])
+        else:
+            detect_ms += float(timings.get("fast_detect_ms", 0.0))
+            detect_ms += float(timings.get("fallback_detect_ms", 0.0))
+        if detect_ms > 0.0:
+            DETECT_MS.observe(detect_ms)
+        if "encode_ms" in timings:
+            ENCODE_MS.observe(float(timings["encode_ms"]))
     except Exception:
         pass
 
@@ -129,6 +170,11 @@ async def _process_verify_job(
         queue_delay_ms = 0.0
         if request_received_time is not None:
             queue_delay_ms = max(0.0, (start_total - request_received_time) * 1000)
+        if METRICS_ENABLED:
+            try:
+                QUEUE_DELAY_MS.observe(float(queue_delay_ms))
+            except Exception:
+                pass
 
         # 1. get job and move to processing
         async with AsyncSessionLocal() as db:
@@ -168,6 +214,7 @@ async def _process_verify_job(
 
         features = service.extract_features(image_bytes)
         logger.warning("job_id=%s ml=%.3fs", job_id, time.time() - t0)
+        _observe_worker_pipeline_metrics(features["timings"])
 
         # optional liveness gate before search/decision
         liveness_passed = LivenessService.is_passed(features["liveness"])
@@ -300,9 +347,7 @@ def process_verify_job(
     request_received_time: float | None = None,
 ):
     try:
-        loop = get_worker_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(
+        run_worker_coroutine(
             _process_verify_job(job_id, image_url, user_id, require_liveness, request_received_time)
         )
     except LookupError:
@@ -319,9 +364,7 @@ def process_verify_job(
             raise self.retry(exc=exc, countdown=min(2 ** self.request.retries, 30))
 
         logger.error("verify job failed permanently job_id=%s", job_id, exc_info=True)
-        loop = get_worker_loop()
-        asyncio.set_event_loop(loop)
-        loop.run_until_complete(_mark_verify_job_failed(job_id, image_url, str(exc)))
+        run_worker_coroutine(_mark_verify_job_failed(job_id, image_url, str(exc)))
         raise
     finally:
         decrement_active()

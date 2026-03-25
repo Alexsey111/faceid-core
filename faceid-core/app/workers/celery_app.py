@@ -25,11 +25,17 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_default_queue="verify_fast",
+    task_default_priority=9,
+    task_queue_max_priority=10,
     task_queues=(
         Queue("verify_fast"),
         Queue("verify_heavy"),
     ),
 )
+celery_app.conf.broker_transport_options = {
+    "queue_order_strategy": "priority",
+    "priority_steps": list(range(10)),
+}
 celery_app.conf.worker_prefetch_multiplier = 1
 
 celery_app.conf.task_routes = {

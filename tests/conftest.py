@@ -1,24 +1,43 @@
-# conftest.py - Конфигурация тестов
+# conftest.py - test configuration
 
+import asyncio
 import os
+import subprocess
+import sys
 
-# 🔴 СНАЧАЛА ENV!
+import pytest
+import pytest_asyncio
+import redis as redis_lib
+from sqlalchemy.ext.asyncio import create_async_engine
+
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+FACEID_DIR = os.path.join(ROOT_DIR, "faceid-core")
+if FACEID_DIR not in sys.path:
+    sys.path.insert(0, FACEID_DIR)
+
 os.environ["POSTGRES_HOST"] = "localhost"
 os.environ["REDIS_HOST"] = "localhost"
+os.environ["CELERY_BROKER_URL"] = "redis://localhost:6379/0"
+os.environ["CELERY_RESULT_BACKEND"] = "redis://localhost:6379/0"
 os.environ["MINIO_ENDPOINT"] = "localhost:9000"
-os.environ["DATABASE_URL"] = "postgresql+asyncpg://postgres:postgres@localhost:5432/postgres"
+os.environ["MODELS_DIR"] = os.path.join(ROOT_DIR, "models")
+os.environ["DATABASE_URL"] = "postgresql+asyncpg://postgres:postgres@localhost:5433/postgres"
 
 from app.core.config import settings
 
 settings.FAISS_PERSIST_ENABLED = False
+settings.DB_POOL_SIZE = 1
+settings.DB_MAX_OVERFLOW = 0
+settings.CELERY_BROKER_URL = "redis://localhost:6379/0"
+settings.CELERY_RESULT_BACKEND = "redis://localhost:6379/0"
+settings.MODELS_DIR = os.path.join(ROOT_DIR, "models")
 
-import sys
-import asyncio
-import pytest
-import pytest_asyncio
-import sqlalchemy as sa
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'faceid-core'))
+TEST_DB_URL = os.environ["DATABASE_URL"]
+test_engine = create_async_engine(
+    TEST_DB_URL,
+    pool_size=1,
+    max_overflow=0,
+)
 
 
 @pytest.fixture(scope="session")
@@ -29,29 +48,20 @@ def event_loop():
     loop.close()
 
 
-@pytest_asyncio.fixture(scope="session", autouse=True)
-async def setup_database():
-    from app.db.session import engine
+@pytest.fixture(scope="session", autouse=True)
+def run_migrations():
+    subprocess.run(["alembic", "upgrade", "head"], check=True, cwd=ROOT_DIR)
 
-    async with engine.begin() as conn:
-        await conn.execute(sa.text(
-            "ALTER TABLE verification_logs ADD COLUMN IF NOT EXISTS margin FLOAT DEFAULT 0.0"
-        ))
-        await conn.execute(sa.text(
-            "ALTER TABLE verification_logs ADD COLUMN IF NOT EXISTS liveness_score FLOAT"
-        ))
-        await conn.execute(sa.text(
-            "ALTER TABLE verification_logs ADD COLUMN IF NOT EXISTS is_genuine BOOLEAN"
-        ))
-        await conn.execute(sa.text(
-            "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS encrypted_embedding BYTEA"
-        ))
-        await conn.execute(sa.text(
-            "ALTER TABLE embeddings ADD COLUMN IF NOT EXISTS embedding BYTEA"
-        ))
-        await conn.execute(sa.text(
-            "ALTER TABLE embeddings ALTER COLUMN embedding DROP NOT NULL"
-        ))
+
+@pytest.fixture(autouse=True)
+def reset_redis():
+    client = redis_lib.Redis(host="localhost", port=6379, db=0)
+    client.flushdb()
+    yield
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def setup_database(run_migrations):
     yield
 
 

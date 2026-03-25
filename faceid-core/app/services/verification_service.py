@@ -19,6 +19,9 @@ try:
         VERIFY_RESULT_COUNTER,
         LIVENESS_RESULT_COUNTER,
         PIPELINE_STAGE_DURATION,
+        PIPELINE_MS,
+        DETECT_MS,
+        ENCODE_MS,
     )
     METRICS_ENABLED = True
 except Exception:
@@ -49,6 +52,27 @@ def _observe_stage(stage: str, duration_ms: float) -> None:
             PIPELINE_STAGE_DURATION.labels(stage=stage).observe(duration_ms)
         except Exception:
             pass
+
+
+def _observe_pipeline_metrics(pipeline_time: dict[str, Any]) -> None:
+    if not METRICS_ENABLED:
+        return
+
+    try:
+        if "total_pipeline_ms" in pipeline_time:
+            PIPELINE_MS.observe(float(pipeline_time["total_pipeline_ms"]))
+        detect_ms = 0.0
+        if "detect_ms" in pipeline_time:
+            detect_ms = float(pipeline_time["detect_ms"])
+        else:
+            detect_ms += float(pipeline_time.get("fast_detect_ms", 0.0))
+            detect_ms += float(pipeline_time.get("fallback_detect_ms", 0.0))
+        if detect_ms > 0.0:
+            DETECT_MS.observe(detect_ms)
+        if "encode_ms" in pipeline_time:
+            ENCODE_MS.observe(float(pipeline_time["encode_ms"]))
+    except Exception:
+        pass
 
 
 def _observe_verify_latency(start_time: float) -> None:
@@ -196,7 +220,15 @@ class VerificationService:
         # ANTI-REPLAY CHECK (just a signal, don't block)
         replay_detected = False
         if check_replay:
-            replay_detected = not AntiReplayService.check(image_bytes)
+            try:
+                replay_detected = not AntiReplayService.check(image_bytes)
+            except Exception as exc:
+                logger.warning(
+                    "anti_replay_unavailable job_id=%s error=%s",
+                    job_id,
+                    exc,
+                )
+                replay_detected = False
 
         logger.info(
             "verify_started job_id=%s",
@@ -270,6 +302,8 @@ class VerificationService:
         embedding = features["embedding"]
         liveness_signals = features["liveness"]
         pipeline_time = features["timings"]
+
+        _observe_pipeline_metrics(pipeline_time)
 
         if "total_pipeline_ms" in pipeline_time:
             _observe_stage("pipeline", float(pipeline_time["total_pipeline_ms"]))

@@ -9,6 +9,7 @@ from sqlalchemy.engine import CursorResult
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.verification_job import VerificationJob
+from app.monitoring.db_metrics import timed_db_call
 
 
 class VerificationJobRepository:
@@ -34,7 +35,7 @@ class VerificationJobRepository:
 
     async def get_by_id(self, job_id: str) -> VerificationJob | None:
         query = select(VerificationJob).where(VerificationJob.id == job_id)
-        result = await self.db.execute(query)
+        result = await timed_db_call(self.db.execute(query), "verification_job_repo.get_by_id")
         return result.scalar_one_or_none()
 
     async def update(
@@ -64,7 +65,10 @@ class VerificationJobRepository:
             .where(VerificationJob.id == job_id)
             .values(**values)
         )
-        db_result: CursorResult[Any] = await self.db.execute(stmt)
+        db_result: CursorResult[Any] = await timed_db_call(
+            self.db.execute(stmt),
+            "verification_job_repo.update",
+        )
 
         if db_result.rowcount == 0:
             raise LookupError("Job not found")

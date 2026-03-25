@@ -11,6 +11,7 @@ from sqlalchemy.orm import selectinload
 from app.core.crypto import decrypt_vector, encrypt_vector
 from app.models.embedding import Embedding
 from app.models.user import User
+from app.monitoring.db_metrics import timed_db_call
 
 
 class EmbeddingRepository:
@@ -48,9 +49,9 @@ class EmbeddingRepository:
             encrypted_embedding=encrypted
         )
         self.db.add(record)
-        await self.db.flush()
-        await self.db.refresh(record)
-        await self.db.commit()
+        await timed_db_call(self.db.flush(), "embedding_repo.create_embedding.flush")
+        await timed_db_call(self.db.refresh(record), "embedding_repo.create_embedding.refresh")
+        await timed_db_call(self.db.commit(), "embedding_repo.create_embedding.commit")
 
         return record
 
@@ -96,12 +97,15 @@ class EmbeddingRepository:
             LIMIT :k
         """)
 
-        result = await self.db.execute(
-            query,
-            {
-                "embedding": embedding_str,
-                "k": k,
-            }
+        result = await timed_db_call(
+            self.db.execute(
+                query,
+                {
+                    "embedding": embedding_str,
+                    "k": k,
+                },
+            ),
+            "embedding_repo.find_top_k",
         )
         rows = result.fetchall()
 
@@ -115,7 +119,7 @@ class EmbeddingRepository:
 
     async def get_by_user_id(self, user_id: int) -> list[Embedding]:
         query = select(Embedding).where(Embedding.user_id == user_id)
-        result = await self.db.execute(query)
+        result = await timed_db_call(self.db.execute(query), "embedding_repo.get_by_user_id")
         return list(result.scalars().all())
 
     async def get_by_user(self, user_id: int) -> list[Embedding]:
@@ -123,18 +127,18 @@ class EmbeddingRepository:
 
     async def delete_by_user_id(self, user_id: int) -> int:
         query = select(Embedding).where(Embedding.user_id == user_id)
-        result = await self.db.execute(query)
+        result = await timed_db_call(self.db.execute(query), "embedding_repo.delete_by_user_id")
         embeddings = result.scalars().all()
 
         count = len(embeddings)
         for emb in embeddings:
             await self.db.delete(emb)
-        await self.db.commit()
+        await timed_db_call(self.db.commit(), "embedding_repo.delete_by_user_id.commit")
         return count
 
     async def get_all_users_with_embeddings(self) -> list[User]:
         query = select(User).options(selectinload(User.embeddings))
-        result = await self.db.execute(query)
+        result = await timed_db_call(self.db.execute(query), "embedding_repo.get_all_users_with_embeddings")
         return list(result.scalars().all())
 
     async def get_user_vectors(self, user_id: int) -> list[np.ndarray]:
@@ -143,7 +147,7 @@ class EmbeddingRepository:
         Если raw отсутствует — fallback на decrypt.
         """
         query = select(Embedding).where(Embedding.user_id == user_id)
-        result = await self.db.execute(query)
+        result = await timed_db_call(self.db.execute(query), "embedding_repo.get_user_vectors")
         rows = list(result.scalars().all())
 
         vectors: list[np.ndarray] = []
@@ -169,7 +173,7 @@ class EmbeddingRepository:
             Embedding.encrypted_embedding,
             Embedding.id,
         )
-        result = await self.db.execute(query)
+        result = await timed_db_call(self.db.execute(query), "embedding_repo.get_all_vectors")
         rows = result.fetchall()
 
         items: list[dict] = []

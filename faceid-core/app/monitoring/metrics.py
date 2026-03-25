@@ -82,6 +82,37 @@ PIPELINE_STAGE_DURATION = Histogram(
     buckets=[0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0],
 )
 
+QUEUE_DELAY_MS = Histogram(
+    "faceid_queue_delay_ms",
+    "Queue delay before worker starts",
+    buckets=[1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000],
+)
+
+PIPELINE_MS = Histogram(
+    "faceid_pipeline_ms",
+    "Total pipeline processing time",
+    buckets=[1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000],
+)
+
+DETECT_MS = Histogram(
+    "faceid_detect_ms",
+    "Face detection time",
+    buckets=[1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000],
+)
+
+ENCODE_MS = Histogram(
+    "faceid_encode_ms",
+    "Face embedding extraction time",
+    buckets=[1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000],
+)
+
+DB_QUERY_TIME_MS = Histogram(
+    "faceid_db_query_time_ms",
+    "Database operation duration",
+    ["operation"],
+    buckets=[0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000],
+)
+
 SEARCH_LATENCY = Histogram(
     "faceid_search_latency_seconds",
     "Search latency",

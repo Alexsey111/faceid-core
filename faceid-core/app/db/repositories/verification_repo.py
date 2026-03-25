@@ -6,6 +6,7 @@ from sqlalchemy import select
 
 from app.models.verification_log import VerificationLog
 from app.models.user import User
+from app.monitoring.db_metrics import timed_db_call
 
 
 class VerificationRepository:
@@ -39,7 +40,10 @@ class VerificationRepository:
             return None
 
         # Check if user exists
-        result = await self.db.execute(select(User).where(User.id == user_id))
+        result = await timed_db_call(
+            self.db.execute(select(User).where(User.id == user_id)),
+            "verification_repo.user_exists",
+        )
         user = result.scalar_one_or_none()
         if not user:
             # User doesn't exist, skip logging

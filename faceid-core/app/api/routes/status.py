@@ -6,6 +6,7 @@ from sqlalchemy import text
 
 from app.db.session import get_db
 from app.ml.runtime import get_face_app
+from app.monitoring.db_metrics import timed_db_call
 
 router = APIRouter()
 
@@ -24,7 +25,7 @@ async def system_status(db: AsyncSession = Depends(get_db)):
 
     # Check database
     try:
-        await db.execute(text("SELECT 1"))
+        await timed_db_call(db.execute(text("SELECT 1")), "status.check")
         status["database"] = "ok"
     except Exception:
         status["database"] = "error"

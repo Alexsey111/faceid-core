@@ -3,6 +3,7 @@ from sqlalchemy import select
 
 from app.services.calibration_service import CalibrationService
 from app.models.verification_log import VerificationLog
+from app.monitoring.db_metrics import timed_db_call
 
 
 class AutoCalibrationService:
@@ -19,11 +20,14 @@ class AutoCalibrationService:
         0 = false match
         """
 
-        result = await self.db.execute(
-            select(
-                VerificationLog.similarity,
-                VerificationLog.is_genuine
-            )
+        result = await timed_db_call(
+            self.db.execute(
+                select(
+                    VerificationLog.similarity,
+                    VerificationLog.is_genuine
+                )
+            ),
+            "auto_calibration.load_data",
         )
 
         rows = result.fetchall()

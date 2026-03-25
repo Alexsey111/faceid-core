@@ -13,7 +13,13 @@ x-worker-base: &worker-base
     - CELERY_BROKER_URL=redis://redis:6379/0
     - CELERY_RESULT_BACKEND=redis://redis:6379/0
     - CELERYD_PREFETCH_MULTIPLIER=1
-    - WORKER_COUNT=6
+    - WORKER_COUNT=8
+    - ASYNC_THROUGHPUT_PER_SEC=8
+    - BACKPRESSURE_MAX_QUEUE_DELAY_MS=750
+    - EMBED_BATCH_ENABLED=true
+    - EMBED_BATCH_SIZE=8
+    - EMBED_BATCH_TIMEOUT_MS=2
+    - EMBED_BATCH_MAX_WAIT_GUARD_MS=50
     - FAISS_ENABLED=${FAISS_ENABLED:-true}
     - MINIO_ENDPOINT=minio:9000
     - MINIO_ACCESS_KEY=minioadmin
@@ -39,6 +45,23 @@ services:
       - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  postgres_test:
+    image: ankane/pgvector
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres"]
       interval: 5s
@@ -77,7 +100,13 @@ services:
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - CELERYD_PREFETCH_MULTIPLIER=1
-      - WORKER_COUNT=6
+      - WORKER_COUNT=8
+      - ASYNC_THROUGHPUT_PER_SEC=8
+      - BACKPRESSURE_MAX_QUEUE_DELAY_MS=750
+      - EMBED_BATCH_ENABLED=true
+      - EMBED_BATCH_SIZE=8
+      - EMBED_BATCH_TIMEOUT_MS=2
+      - EMBED_BATCH_MAX_WAIT_GUARD_MS=50
       - FAISS_ENABLED=${FAISS_ENABLED:-true}
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=minioadmin
@@ -94,11 +123,11 @@ services:
 
   worker_fast:
     <<: *worker-base
-    command: celery -A app.workers.celery_app worker -Q verify_fast --loglevel=info --concurrency=8
+    command: celery -A app.workers.celery_app worker -Q verify_fast --loglevel=info --concurrency=4 --pool=prefork
 
   worker_heavy:
     <<: *worker-base
-    command: celery -A app.workers.celery_app worker -Q verify_heavy --loglevel=info --concurrency=2
+    command: celery -A app.workers.celery_app worker -Q verify_heavy --loglevel=info --concurrency=4 --pool=prefork
 
   prometheus:
     image: prom/prometheus
@@ -110,3 +139,4 @@ services:
 volumes:
   postgres_data:
   minio_data:
+  postgres_test_data:
