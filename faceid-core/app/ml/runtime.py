@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 def _make_session_options() -> ort.SessionOptions:
     so = ort.SessionOptions()
-    so.intra_op_num_threads = 4
+    so.intra_op_num_threads = 1
     so.inter_op_num_threads = 1
     so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL

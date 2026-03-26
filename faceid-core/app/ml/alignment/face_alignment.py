@@ -41,7 +41,9 @@ class FaceAlignment:
             image,
             transform,
             self.output_size,
-            borderValue=0.0
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=(0.0, 0.0, 0.0),
         )
 
         return aligned

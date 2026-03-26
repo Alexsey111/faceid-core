@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from app.core.config import settings
 from app.ml.batch_encoder import BatchEncoder
 from app.ml.embedding.onnx_arcface_encoder import OnnxArcFaceEncoder
@@ -10,7 +12,8 @@ _batch_encoder: BatchEncoder | OnnxArcFaceEncoder | None = None
 def get_batch_encoder() -> BatchEncoder | OnnxArcFaceEncoder:
     global _batch_encoder
     if _batch_encoder is None:
-        encoder = OnnxArcFaceEncoder()
+        model_path = Path(settings.MODELS_DIR) / "buffalo_l" / "w600k_r50.onnx"
+        encoder = OnnxArcFaceEncoder(model_path)
         if settings.EMBED_BATCH_ENABLED:
             _batch_encoder = BatchEncoder(
                 encoder,

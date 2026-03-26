@@ -163,7 +163,7 @@ async def _process_verify_job(
     user_id: str | None,
     require_liveness: bool,
     request_received_time: float | None,
-) -> None:
+) -> dict[str, object] | None:
     logger.warning("TASK START job_id=%s", job_id)
     print(f"[START] pid={os.getpid()} time={time.time()}", flush=True)
     try:
@@ -260,11 +260,8 @@ async def _process_verify_job(
                 await job_repo.update(
                     job_id,
                     status=JobStatus.done,
-                    user_id=int(user_id) if user_id else None,
-                    similarity=0.0,
-                    liveness_score=liveness_score,
-                    is_genuine=False,
-                    commit=False,
+                    result=result,
+                    error=None,
                 )
 
                 await db.commit()

@@ -10,10 +10,40 @@ IN_SYSTEM_KEY = "faceid:in_system"
 logger = logging.getLogger(__name__)
 
 
+def current_active_requests() -> int:
+    try:
+        raw_value = redis_client.get(IN_SYSTEM_KEY)
+        return max(0, int(raw_value or 0))
+    except Exception:
+        return 0
+
+
+def should_use_async(threshold: int | None = None) -> bool:
+    max_fast_path = settings.FAST_PATH_MAX_CONCURRENCY if threshold is None else int(threshold)
+    return current_active_requests() >= max_fast_path
+
+
 def estimate_queue_delay_ms(in_system: int) -> float:
     active_tasks = max(0, in_system)
     throughput_per_sec = max(0.001, float(settings.ASYNC_THROUGHPUT_PER_SEC))
     return float((active_tasks / throughput_per_sec) * 1000.0)
+
+
+def try_reserve_fast_path_slot(max_active_requests: int | None = None) -> bool:
+    limit = settings.FAST_PATH_MAX_CONCURRENCY if max_active_requests is None else int(max_active_requests)
+    in_system = redis_client.incr(IN_SYSTEM_KEY)
+    redis_client.expire(IN_SYSTEM_KEY, 60)
+
+    if in_system > limit:
+        decrement_active()
+        return False
+
+    logger.info(
+        "[BP] fast_path_reserve in_system=%s max_active_requests=%s",
+        in_system,
+        limit,
+    )
+    return True
 
 
 def try_reserve_slot(max_queue_delay_ms: float = 1000.0) -> bool:

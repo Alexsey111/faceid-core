@@ -175,6 +175,48 @@ Celery prefork ≠ Prometheus multiprocess (из коробки)
 
 ---
 
+## 🎯 Финальная схема
+
+```text
+API:
+  лёгкий orchestration слой
+
+Workers:
+  replicas = 2
+  semaphore = 2
+
+Runtime:
+  ONNX intra/inter = 1/1
+
+Flow:
+  sync verify — для low-latency одиночных вызовов
+  async verify — для очередного compute-path
+```
+
+---
+
+## Encoder Performance (CPU tuned)
+
+```text
+Threads: 1/1
+```
+
+### Note
+
+```text
+1/1 now matches the final runtime target for predictable CPU usage.
+```
+
+To scale the async worker locally:
+
+```bash
+docker compose up --scale worker=2
+```
+
+`worker` does not publish a host port; multiple replicas are meant to be scaled horizontally.
+
+---
+
 ## 🚀 Запуск
 
 ```bash

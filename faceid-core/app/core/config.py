@@ -11,6 +11,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
 
     ENV: str = "development"
+    APP_ROLE: str = "api"
 
     APP_NAME: str = "FaceID Core"
     DEBUG: bool = False
@@ -55,6 +56,8 @@ class Settings(BaseSettings):
     # Models
     # -------------------------
     MODELS_DIR: str = "D:/python projects/faceid-core"
+    ONNX_INTRA_OP_THREADS: int = 4
+    ONNX_INTER_OP_THREADS: int = 1
 
     # -------------------------
     # Search backend
@@ -72,6 +75,14 @@ class Settings(BaseSettings):
     # Face verification thresholds
     # -------------------------
     USE_PIPELINE_V2: bool = True
+    USE_SIMPLE_IS_GENUINE: bool = True
+    USE_FAST_PATH: bool = True
+    FAST_PATH_MAX_CONCURRENCY: int = 4
+    FAST_WORKER_URL: str = "http://fast_worker:8000"
+    FAST_WORKER_ENABLED: bool = True
+    FAST_WORKER_FAILURES: int = 0
+    FAST_WORKER_MAX_FAILURES: int = 3
+    FAST_WORKER_MAX_CONCURRENCY: int = 4
     LIVENESS_ENABLED: bool = True
     LIVENESS_THRESHOLD: float = 0.5
     FACE_MATCH_THRESHOLD: float = 0.6

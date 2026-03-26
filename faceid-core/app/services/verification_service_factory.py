@@ -1,5 +1,7 @@
 # faceid-core\app\services\verification_service_factory.py
 
+from typing import Any, Protocol
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ml.pipeline import FacePipeline
@@ -11,10 +13,15 @@ from app.services.search_service import SearchService
 from app.core.config import settings
 
 
-_pipeline: object | None = None
+
+class PipelineProtocol(Protocol):
+    def process(self, image_bytes: bytes) -> dict[str, Any]: ...
 
 
-def get_pipeline() -> object:
+_pipeline: PipelineProtocol | None = None
+
+
+def get_pipeline() -> PipelineProtocol:
     global _pipeline
     if _pipeline is None:
         print(f"USE_PIPELINE_V2={settings.USE_PIPELINE_V2}", flush=True)
@@ -32,4 +39,16 @@ def get_verification_service(db: AsyncSession) -> VerificationService:
         verification_repo=verification_repo,
         search_service=SearchService(embedding_repo),
         pipeline=get_pipeline(),
+    )
+
+
+def get_verification_service_without_pipeline(db: AsyncSession) -> VerificationService:
+    embedding_repo = EmbeddingRepository(db)
+    verification_repo = VerificationRepository(db)
+
+    return VerificationService(
+        embedding_repo=embedding_repo,
+        verification_repo=verification_repo,
+        search_service=SearchService(embedding_repo),
+        load_pipeline=False,
     )

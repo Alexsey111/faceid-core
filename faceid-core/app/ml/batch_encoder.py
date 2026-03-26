@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from collections import deque
+import logging
+import os
 import threading
 import time
 from typing import Any
@@ -10,6 +12,9 @@ from typing import Any
 import numpy as np
 
 from app.core.config import settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class BatchEncoder:
@@ -42,7 +47,6 @@ class BatchEncoder:
         return self.encoder.encode(face_crop)
 
     def encode(self, face_crop: np.ndarray) -> np.ndarray:
-        # Adaptive bypass: keep low-load requests off the batching queue.
         result: dict[str, Any] = {}
         ready = threading.Event()
 
@@ -50,20 +54,11 @@ class BatchEncoder:
             queue_is_small = len(self._queue) <= 1
 
         if queue_is_small:
-            # Give batching a tiny chance to collect a neighbor under load.
-            if settings.EMBED_BATCH_ENABLED:
-                time.sleep(0.001)
+            return self._encode_single_direct(face_crop)
 
-            with self._condition:
-                if len(self._queue) <= 1:
-                    return self._encode_single_direct(face_crop)
-
-                self._queue.append((face_crop, result, ready, time.monotonic()))
-                self._condition.notify()
-        else:
-            with self._condition:
-                self._queue.append((face_crop, result, ready, time.monotonic()))
-                self._condition.notify()
+        with self._condition:
+            self._queue.append((face_crop, result, ready, time.monotonic()))
+            self._condition.notify()
 
         ready.wait()
 
@@ -101,7 +96,10 @@ class BatchEncoder:
             events = [item[2] for item in batch]
 
             try:
+                logger.info("PID=%s batch_size=%d", os.getpid(), len(batch))
+                t0 = time.time()
                 embeddings = self.encoder.encode_batch(face_crops)
+                logger.info("encode_batch_ms=%.3f", (time.time() - t0) * 1000.0)
                 if len(embeddings) != len(batch):
                     raise RuntimeError("Batch encoder returned unexpected batch size")
 

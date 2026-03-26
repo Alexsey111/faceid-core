@@ -1,6 +1,13 @@
 # main.py - Точка входа в приложение
 
 from contextlib import asynccontextmanager
+import base64
+import os
+import logging
+import socket
+import threading
+import time
+from typing import Any
 from fastapi import FastAPI, Response
 from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 import cv2
@@ -13,17 +20,62 @@ from app.db.base import Base
 from app.db.session import engine, AsyncSessionLocal
 from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.core.config import settings
-from app.ml.pipeline import FacePipeline
-from app.ml.dependencies import reset_batch_encoder
 from app.services.faiss_index import FaissIndex
 from app.services.search_service import SearchService
+from app.services.verification_service_factory import get_pipeline
 from app.models.user import User  # noqa: F401
 from app.models.embedding import Embedding  # noqa: F401
 from app.models.verification_log import VerificationLog  # noqa: F401
 from app.models.verification_job import VerificationJob  # noqa: F401
 from app.core.middleware import request_id_middleware
+from app.schemas.verify import VerifyRequest
 
 setup_logging()
+
+logger = logging.getLogger(__name__)
+
+
+FAST_WORKER_SEMAPHORE = threading.Semaphore(max(1, int(settings.FAST_WORKER_MAX_CONCURRENCY)))
+
+
+def _jsonable_pipeline_result(value) -> Any:
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {key: _jsonable_pipeline_result(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_jsonable_pipeline_result(item) for item in value]
+    if isinstance(value, tuple):
+        return [_jsonable_pipeline_result(item) for item in value]
+    return value
+
+
+def _normalize_verify_sync_result(result: dict[str, Any]) -> dict[str, Any]:
+    """
+    Keep the worker contract stable for the API.
+
+    The API only depends on `embedding` to decide whether the worker result is usable.
+    """
+    payload: dict[str, Any] = {
+        "status": result.get("status", "ok"),
+        "embedding": result.get("embedding"),
+        "bbox": result.get("bbox"),
+        "landmarks": result.get("landmarks"),
+        "liveness_passed": result.get("liveness_passed"),
+        "liveness_score": result.get("liveness_score"),
+        "worker_hostname": socket.gethostname(),
+        "worker_pid": os.getpid(),
+        "wait_for_slot_ms": result.get("wait_for_slot_ms"),
+        "worker_total_ms": result.get("worker_total_ms"),
+    }
+
+    if payload["status"] == "spoof":
+        payload["liveness_passed"] = bool(result.get("liveness_passed", False))
+        payload["liveness_score"] = float(result.get("liveness_score", 0.0) or 0.0)
+
+    return _jsonable_pipeline_result(payload)
 
 
 @asynccontextmanager
@@ -58,16 +110,16 @@ async def lifespan(app: FastAPI):
 
             SearchService._faiss_index = index
 
-    # Initialize ML pipeline
     cv2.setNumThreads(2)
-    pipeline = FacePipeline()
+    if settings.APP_ROLE == "fast_worker":
+        # Warm up the ML pipeline only in the fast worker process.
+        pipeline = get_pipeline()
 
-    # warm-up (очень важно)
-    try:
-        dummy = np.zeros((112, 112, 3), dtype=np.uint8)
-        pipeline.process(dummy.tobytes())
-    except Exception:
-        pass
+        try:
+            dummy = np.zeros((112, 112, 3), dtype=np.uint8)
+            pipeline.process(dummy.tobytes())
+        except Exception:
+            pass
 
     yield
     # Shutdown: cleanup if needed
@@ -90,6 +142,34 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+
+@app.post("/verify_sync")
+def verify_sync(request: VerifyRequest):
+    pipeline = get_pipeline()
+    image_bytes = base64.b64decode(request.image)
+
+    wait_t0 = time.perf_counter()
+    FAST_WORKER_SEMAPHORE.acquire()
+    wait_for_slot_ms = (time.perf_counter() - wait_t0) * 1000.0
+
+    run_t0 = time.perf_counter()
+    worker_total_ms = 0.0
+    try:
+        result = pipeline.process(image_bytes)
+        worker_total_ms = (time.perf_counter() - run_t0) * 1000.0
+        result["wait_for_slot_ms"] = wait_for_slot_ms
+        result["worker_total_ms"] = worker_total_ms
+        return _normalize_verify_sync_result(result)
+    finally:
+        if worker_total_ms == 0.0:
+            worker_total_ms = (time.perf_counter() - run_t0) * 1000.0
+        logger.warning(
+            "fast_worker wait_for_slot_ms=%.2f worker_total_ms=%.2f",
+            wait_for_slot_ms,
+            worker_total_ms,
+        )
+        FAST_WORKER_SEMAPHORE.release()
 
 
 @app.get("/metrics")

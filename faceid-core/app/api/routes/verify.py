@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
+import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -20,16 +21,31 @@ from app.db.session import get_db
 from app.infrastructure.minio_client import MinioClient
 from app.infrastructure.redis_client import redis_client
 from app.models.verification_job import JobStatus
-from app.schemas.verify import VerifyRequest, VerifyResponse
-from app.services.backpressure import decrement_active, try_reserve_slot
+from app.schemas.verify import VerifyEnqueueResponse, VerifyRequest, VerifyResponse
+from app.services.backpressure import (
+    decrement_active,
+    should_use_async,
+    try_reserve_fast_path_slot,
+    try_reserve_slot,
+)
+from app.services.fast_worker_circuit_breaker import (
+    get_fast_worker_failures,
+    is_fast_worker_enabled,
+    record_fast_worker_failure,
+    record_fast_worker_success,
+)
 from app.services.rate_limiter import RateLimiter
-from app.services.verification_service_factory import get_verification_service
+from app.services.verification_service_factory import (
+    get_verification_service,
+    get_verification_service_without_pipeline,
+)
 from app.workers.tasks.verify_task import verify_task
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 MAX_IMAGE_SIZE = 5 * 1024 * 1024
+_fast_worker_client: httpx.AsyncClient | None = None
 
 
 def _normalize_priority(value: str | None) -> tuple[str, int]:
@@ -38,6 +54,49 @@ def _normalize_priority(value: str | None) -> tuple[str, int]:
         raise HTTPException(status_code=400, detail="Invalid priority")
 
     return priority, 9 if priority == "high" else 0
+
+
+def _pick_fast_worker_url() -> str:
+    return settings.FAST_WORKER_URL
+
+
+def get_fast_worker_client() -> httpx.AsyncClient:
+    global _fast_worker_client
+
+    if _fast_worker_client is None:
+        _fast_worker_client = httpx.AsyncClient(
+            timeout=httpx.Timeout(
+                connect=1.0,
+                read=2.0,
+                write=1.0,
+                pool=1.0,
+            ),
+            limits=httpx.Limits(
+                max_connections=100,
+                max_keepalive_connections=50,
+            ),
+        )
+
+    return _fast_worker_client
+
+
+async def _call_fast_worker(
+    client: httpx.AsyncClient,
+    url: str,
+    payload: dict[str, object],
+) -> tuple[dict[str, object], float]:
+    t0 = time.perf_counter()
+    resp = await client.post(f"{url}/verify_sync", json=payload)
+    upstream_http_ms = (time.perf_counter() - t0) * 1000.0
+    resp.raise_for_status()
+    data = resp.json()
+    if data.get("status") == "no_face":
+        return data, upstream_http_ms
+    if not data:
+        return data, upstream_http_ms
+    if "embedding" not in data or data["embedding"] is None:
+        raise HTTPException(status_code=502, detail="fast_worker returned invalid payload")
+    return data, upstream_http_ms
 
 
 async def _enqueue_verify_job(
@@ -93,6 +152,8 @@ async def _enqueue_verify_job(
         },
     )
 
+    return None
+
 
 @router.post("/verify", response_model=VerifyResponse)
 async def verify_file(
@@ -122,13 +183,13 @@ async def verify_file(
     return result
 
 
-@router.post("/verify_base64", response_model=VerifyResponse)
+@router.post("/verify_base64", response_model=VerifyResponse | VerifyEnqueueResponse)
 async def verify_base64(
     request: VerifyRequest,
     http_request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Sync verify for low-load / smoke use only."""
+    """Fast-path sync verify for low-load use, with Celery fallback."""
     RateLimiter.check(http_request, "verify", limit=10)
 
     image_bytes = base64.b64decode(request.image)
@@ -136,18 +197,76 @@ async def verify_base64(
     if len(image_bytes) > MAX_IMAGE_SIZE:
         raise HTTPException(status_code=400, detail="Image too large")
 
-    service = get_verification_service(db)
+    if settings.USE_FAST_PATH and is_fast_worker_enabled():
+        if not should_use_async():
+            if try_reserve_fast_path_slot():
+                try:
+                    t_start = time.time()
+                    client = get_fast_worker_client()
+                    pipeline_result, upstream_http_ms = await _call_fast_worker(
+                        client,
+                        _pick_fast_worker_url(),
+                        request.model_dump(),
+                    )
+                    logger.warning(
+                        "fast_worker_timing upstream_http_ms=%.2f worker_total_ms=%s wait_for_slot_ms=%s",
+                        upstream_http_ms,
+                        pipeline_result.get("worker_total_ms"),
+                        pipeline_result.get("wait_for_slot_ms"),
+                    )
+                    logger.warning(
+                        "fast_worker_identity worker_hostname=%s worker_pid=%s",
+                        pipeline_result.get("worker_hostname"),
+                        pipeline_result.get("worker_pid"),
+                    )
+                    record_fast_worker_success()
 
-    result = await service.verify_face(
-        image_bytes,
+                    service = get_verification_service_without_pipeline(db)
+                    return await service.verify_from_pipeline_result(
+                        pipeline_result,
+                        image_bytes=image_bytes,
+                        user_id=request.user_id,
+                        require_liveness=request.require_liveness,
+                        check_replay=True,
+                        t_start=t_start,
+                    )
+                except Exception as exc:
+                    failures = record_fast_worker_failure()
+                    logger.warning(
+                        "fast_worker_unavailable, falling back to async queue failures=%s enabled=%s error=%s",
+                        failures,
+                        is_fast_worker_enabled(),
+                        exc,
+                    )
+                finally:
+                    decrement_active()
+    elif settings.USE_FAST_PATH:
+        logger.warning(
+            "fast_worker_circuit_open, using celery fallback failures=%s",
+            get_fast_worker_failures(),
+        )
+
+    job_id = str(uuid4())
+    request_received_time = time.time()
+    safe_filename = "legacy.jpg"
+    object_name = f"verify/{job_id}/{safe_filename}"
+
+    await _enqueue_verify_job(
+        db=db,
+        job_id=job_id,
+        request_received_time=request_received_time,
+        image_bytes=image_bytes,
+        object_name=object_name,
+        content_type="image/jpeg",
         user_id=request.user_id,
         require_liveness=request.require_liveness,
+        priority="high",
     )
 
-    return result
+    return {"job_id": job_id, "status": "pending"}
 
 
-@router.post("/verify_async")
+@router.post("/verify_async_file")
 async def verify_async(
     http_request: Request,
     file: UploadFile = File(...),
@@ -252,6 +371,8 @@ async def get_verify_result(
     cached = redis_client.get(f"job:{job_id}")
     if cached:
         try:
+            if isinstance(cached, bytes):
+                cached = cached.decode("utf-8")
             return json.loads(cached)
         except Exception:
             pass

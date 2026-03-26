@@ -35,7 +35,7 @@ class FacePipelineV2:
     5. ONNX ArcFace encode
     """
 
-    FAST_CONFIDENCE_THRESHOLD = 0.6
+    FAST_CONFIDENCE_THRESHOLD = 0.7
     FAST_BBOX_EXPAND_SCALE = 0.30
 
     def __init__(self):
@@ -107,7 +107,10 @@ class FacePipelineV2:
 
             roi = self._safe_crop(image, x1, y1, x2, y2)
 
-            if confidence >= 0.85:
+            if roi.mean() < 5:
+                raise ValueError("bad crop")
+
+            if confidence >= 0.8:
                 face_input = cv2.resize(roi, (112, 112))
                 bbox_source = "fast_only_high_conf"
             else:
@@ -214,7 +217,7 @@ class FacePipelineV2:
             logger.warning("slow_liveness_ms=%.2f", timings["liveness_ms"])
 
         timings["total_pipeline_ms"] = sum(timings.values())
-        logger.debug("bbox_source=%s", bbox_source)
+        logger.info("bbox_source=%s", bbox_source)
 
         return {
             "status": "ok",

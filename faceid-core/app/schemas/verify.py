@@ -31,3 +31,8 @@ class VerifyResponse(BaseModel):
             ]
         }
     )
+
+
+class VerifyEnqueueResponse(BaseModel):
+    job_id: str
+    status: str = "pending"

@@ -117,6 +117,13 @@ class EmbeddingRepository:
             for row in rows
         ]
 
+    async def find_similar(
+        self,
+        embedding: np.ndarray,
+        k: int = 2,
+    ) -> list[dict]:
+        return await self.find_top_k(embedding, k=k)
+
     async def get_by_user_id(self, user_id: int) -> list[Embedding]:
         query = select(Embedding).where(Embedding.user_id == user_id)
         result = await timed_db_call(self.db.execute(query), "embedding_repo.get_by_user_id")

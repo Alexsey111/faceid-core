@@ -1,20 +1,26 @@
 # app/services/verification_service.py - Сервис верификации
 
+import asyncio
 import logging
 from typing import Dict, Any, Optional
 import numpy as np
 import time
+
+from fastapi.concurrency import run_in_threadpool
 
 from app.ml.pipeline import FacePipeline
 from app.ml.pipeline_v2 import FacePipelineV2
 from app.core.config import settings
 from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.db.repositories.verification_repo import VerificationRepository
+from app.db.session import AsyncSessionLocal
+from app.db.repositories.user_repo import UserRepository
 from app.services.liveness_service import LivenessService
 from app.services.anti_replay_service import AntiReplayService
 from app.services.search_service import SearchService
 try:
     from app.monitoring.metrics import (
+        IS_GENUINE_MODE,
         VERIFY_LATENCY,
         VERIFY_RESULT_COUNTER,
         LIVENESS_RESULT_COUNTER,
@@ -27,6 +33,7 @@ try:
     )
     METRICS_ENABLED = True
 except Exception:
+    IS_GENUINE_MODE = None
     METRICS_ENABLED = False
 
 logger = logging.getLogger("verification")
@@ -105,6 +112,84 @@ def _record_liveness_result(passed: Optional[bool]) -> None:
             pass
 
 
+async def _persist_verification_log_background(
+    *,
+    user_id: int | None,
+    similarity: float,
+    success: bool,
+    margin: float | None = None,
+    liveness_score: float | None = None,
+    is_genuine: bool | None = None,
+    expected_external_user_id: str | None = None,
+    query_embedding: np.ndarray | None = None,
+    top1_user_id: int | None = None,
+) -> None:
+    if user_id is None:
+        return
+
+    try:
+        async with AsyncSessionLocal() as db:
+            computed_is_genuine = await _resolve_is_genuine(
+                db,
+                expected_external_user_id=expected_external_user_id,
+                query_embedding=query_embedding,
+                top1_user_id=top1_user_id,
+                fallback_is_genuine=is_genuine,
+            )
+
+            repo = VerificationRepository(db)
+            await repo.create_log(
+                user_id=user_id,
+                similarity=similarity,
+                success=success,
+                margin=margin,
+                liveness_score=liveness_score,
+                is_genuine=computed_is_genuine,
+            )
+    except Exception:
+        logger.exception("background_verification_log_failed user_id=%s", user_id)
+
+
+async def _resolve_is_genuine(
+    db: Any,
+    *,
+    expected_external_user_id: str | None,
+    query_embedding: np.ndarray | None,
+    top1_user_id: int | None,
+    fallback_is_genuine: bool | None = None,
+) -> bool | None:
+    if not expected_external_user_id:
+        return fallback_is_genuine
+
+    user_repo = UserRepository(db)
+    expected_user = await user_repo.get_by_external_id(expected_external_user_id)
+    if not expected_user:
+        return False
+
+    expected_user_id = getattr(expected_user, "id")
+
+    if settings.USE_SIMPLE_IS_GENUINE or query_embedding is None:
+        return bool(top1_user_id == expected_user_id)
+
+    embedding_repo = EmbeddingRepository(db)
+    vectors = await embedding_repo.get_user_vectors(expected_user_id)
+    if not vectors:
+        return False
+
+    centroid = np.mean(np.stack(vectors), axis=0)
+    centroid_norm = np.linalg.norm(centroid)
+    query = np.asarray(query_embedding, dtype=np.float32)
+    query_norm = np.linalg.norm(query)
+
+    if centroid_norm == 0.0 or query_norm == 0.0:
+        return False
+
+    centroid = centroid / centroid_norm
+    query = query / query_norm
+    centroid_similarity = float(np.dot(query, centroid))
+    return centroid_similarity >= settings.HIGH_THRESHOLD
+
+
 class VerificationService:
 
     def __init__(
@@ -113,18 +198,32 @@ class VerificationService:
         verification_repo: VerificationRepository | None,
         search_service: SearchService | None = None,
         pipeline: Any | None = None,
+        load_pipeline: bool = True,
     ):
         self.embedding_repo = embedding_repo
         self.verification_repo = verification_repo
+        active_mode = "simple" if settings.USE_SIMPLE_IS_GENUINE else "centroid"
+        if METRICS_ENABLED and IS_GENUINE_MODE is not None:
+            IS_GENUINE_MODE.labels(mode=active_mode).set(1)
+            IS_GENUINE_MODE.labels(mode="centroid" if active_mode == "simple" else "simple").set(0)
+        logger.info(
+            "is_genuine_mode=%s",
+            active_mode,
+        )
         if pipeline is not None:
             self.pipeline = pipeline
-        else:
+        elif load_pipeline:
             self.pipeline = FacePipelineV2() if settings.USE_PIPELINE_V2 else FacePipeline()
+        else:
+            self.pipeline = None
         self.search_service = search_service
         if self.search_service is None and embedding_repo is not None:
             self.search_service = SearchService(embedding_repo)
 
     def extract_features(self, image_bytes: bytes) -> dict:
+        if self.pipeline is None:
+            raise RuntimeError("Pipeline is required for extract_features")
+
         result = self.pipeline.process(image_bytes)
 
         if result.get("status") == "spoof":
@@ -205,7 +304,7 @@ class VerificationService:
             job_id=job_id,
         )
 
-    async def _verify_face_impl(
+    async def verify_face_in_worker(
         self,
         image_bytes: bytes,
         user_id: Optional[str] = None,
@@ -213,8 +312,28 @@ class VerificationService:
         check_replay: bool = True,
         job_id: Optional[str] = None,
     ) -> Dict[str, Any]:
+        return await self._verify_face_impl(
+            image_bytes=image_bytes,
+            user_id=user_id,
+            require_liveness=require_liveness,
+            check_replay=check_replay,
+            job_id=job_id,
+        )
 
-        t_start = time.time()
+    async def verify_from_pipeline_result(
+        self,
+        features: Dict[str, Any],
+        image_bytes: bytes,
+        user_id: Optional[str] = None,
+        require_liveness: bool = False,
+        check_replay: bool = True,
+        job_id: Optional[str] = None,
+        t_start: float | None = None,
+    ) -> Dict[str, Any]:
+        if self.embedding_repo is None:
+            raise RuntimeError("EmbeddingRepository is required for verify_face")
+
+        t_start = time.time() if t_start is None else t_start
 
         verification_repo = self.verification_repo
         if verification_repo is None:
@@ -233,6 +352,7 @@ class VerificationService:
             user_id_int: Optional[int] = int(user_id) if user_id else None
         except (ValueError, TypeError):
             user_id_int = None
+        user_id_external_id = user_id
 
         # ANTI-REPLAY CHECK (just a signal, don't block)
         replay_detected = False
@@ -247,6 +367,42 @@ class VerificationService:
                 )
                 replay_detected = False
 
+        async def _store_verification_log(
+            *,
+            user_id: int | None,
+            similarity: float,
+            success: bool,
+            margin: float | None = None,
+            liveness_score: float | None = None,
+            is_genuine: bool | None = None,
+            query_embedding: np.ndarray | None = None,
+            top1_user_id: int | None = None,
+        ) -> None:
+            if job_id is None:
+                asyncio.create_task(
+                    _persist_verification_log_background(
+                        user_id=user_id,
+                        similarity=similarity,
+                        success=success,
+                        margin=margin,
+                        liveness_score=liveness_score,
+                        is_genuine=is_genuine,
+                        expected_external_user_id=user_id_external_id,
+                        query_embedding=query_embedding,
+                        top1_user_id=top1_user_id,
+                    )
+                )
+                return
+
+            await verification_repo.create_log(
+                user_id=user_id,
+                similarity=similarity,
+                success=success,
+                margin=margin,
+                liveness_score=liveness_score,
+                is_genuine=is_genuine,
+            )
+
         logger.info(
             "verify_started job_id=%s",
             job_id,
@@ -257,77 +413,17 @@ class VerificationService:
             ),
         )
 
-        try:
-            features = self.extract_features(image_bytes)
-        except ValueError as e:
-            if str(e) == "Invalid embedding vector":
-                _record_verify_result("no_match")
-                _observe_verify_latency(t_start)
-                return {
-                    "status": "no_match",
-                    "similarity": 0.0,
-                    "liveness_passed": None,
-                    "replay_detected": replay_detected,
-                }
-
-            logger.exception(
-                "pipeline_failed job_id=%s",
-                job_id,
-                extra=_log_extra(job_id, error=str(e)),
-            )
-
-            await verification_repo.create_log(
-                user_id=user_id_int,
-                similarity=0.0,
-                success=False,
-                margin=None,
-                liveness_score=None,
-                is_genuine=None
-            )
-            _record_verify_result("processing_failed")
-            _observe_verify_latency(t_start)
-
-            return {
-                "status": "processing_failed",
-                "liveness_passed": False,
-                "replay_detected": replay_detected
-            }
-        except Exception as e:
-            logger.exception(
-                "pipeline_failed job_id=%s",
-                job_id,
-                extra=_log_extra(job_id, error=str(e)),
-            )
-
-            await verification_repo.create_log(
-                user_id=user_id_int,
-                similarity=0.0,
-                success=False,
-                margin=None,
-                liveness_score=None,
-                is_genuine=None
-            )
-            _record_verify_result("processing_failed")
-            _observe_verify_latency(t_start)
-
-            return {
-                "status": "processing_failed",
-                "liveness_passed": False,
-                "replay_detected": replay_detected
-            }
-
         if features.get("status") == "spoof":
-            liveness = features["liveness"]
-            liveness_score = float(liveness.get("score", 0.0))
-            liveness_risk = liveness.get("risk", "spoof")
+            liveness_score = float(features.get("liveness_score", 0.0) or 0.0)
+            liveness_risk = "spoof"
 
-            await verification_repo.create_log(
+            await _store_verification_log(
                 user_id=user_id_int,
                 similarity=0.0,
                 success=False,
                 margin=None,
                 liveness_score=liveness_score,
-                is_genuine=None
+                is_genuine=None,
             )
             _record_verify_result("spoof_detected")
             _record_liveness_result(False)
@@ -335,7 +431,7 @@ class VerificationService:
             _observe_verify_latency(t_start)
 
             return {
-                "status": "spoof",
+                "status": "spoof_detected",
                 "liveness_passed": False,
                 "liveness": {
                     "score": liveness_score,
@@ -345,19 +441,19 @@ class VerificationService:
             }
 
         embedding = features["embedding"]
-        liveness_signals = features["liveness"]
-        pipeline_time = features["timings"]
+        pipeline_time = features.get("timings", {})
 
-        _observe_pipeline_metrics(pipeline_time)
+        if job_id is not None:
+            _observe_pipeline_metrics(pipeline_time)
 
-        if "total_pipeline_ms" in pipeline_time:
-            _observe_stage("pipeline", float(pipeline_time["total_pipeline_ms"]))
-        if "detect_ms" in pipeline_time:
-            _observe_stage("detect", float(pipeline_time["detect_ms"]))
-        if "encode_ms" in pipeline_time:
-            _observe_stage("embed", float(pipeline_time["encode_ms"]))
-        if "liveness_ms" in pipeline_time:
-            _observe_stage("liveness", float(pipeline_time["liveness_ms"]))
+            if "total_pipeline_ms" in pipeline_time:
+                _observe_stage("pipeline", float(pipeline_time["total_pipeline_ms"]))
+            if "detect_ms" in pipeline_time:
+                _observe_stage("detect", float(pipeline_time["detect_ms"]))
+            if "encode_ms" in pipeline_time:
+                _observe_stage("embed", float(pipeline_time["encode_ms"]))
+            if "liveness_ms" in pipeline_time:
+                _observe_stage("liveness", float(pipeline_time["liveness_ms"]))
 
         logger.info(
             "pipeline_completed job_id=%s",
@@ -365,22 +461,43 @@ class VerificationService:
             extra=_log_extra(job_id, timings=pipeline_time),
         )
 
-        # Compute composite liveness score
-        liveness_result = LivenessService.fuse(liveness_signals)
-        liveness_score = liveness_result["score"]
-        liveness_risk = liveness_result["risk"]
+        # Pipeline v2 returns liveness_passed / liveness_score directly.
+        # Older pipeline variants still provide a full liveness signal dict.
+        raw_liveness_signals = features.get("liveness")
+        if raw_liveness_signals is None:
+            liveness_score = float(features.get("liveness_score", 0.0) or 0.0)
+            liveness_passed = features.get("liveness_passed")
+            if liveness_passed is None:
+                liveness_passed = liveness_score >= settings.LIVENESS_THRESHOLD
 
-        # LIVENESS CHECK
-        liveness_passed = LivenessService.is_passed(liveness_signals)
+            if liveness_score >= 0.8:
+                liveness_risk = "low"
+            elif liveness_score >= 0.6:
+                liveness_risk = "medium"
+            else:
+                liveness_risk = "high"
+
+            liveness_signals = {
+                "passive": liveness_score,
+            }
+        else:
+            liveness_signals = raw_liveness_signals
+            # Compute composite liveness score
+            liveness_result = LivenessService.fuse(liveness_signals)
+            liveness_score = liveness_result["score"]
+            liveness_risk = liveness_result["risk"]
+
+            # LIVENESS CHECK
+            liveness_passed = LivenessService.is_passed(liveness_signals)
         if require_liveness and not liveness_passed:
 
-            await verification_repo.create_log(
+            await _store_verification_log(
                 user_id=user_id_int,
                 similarity=0.0,
                 success=False,
                 margin=None,
                 liveness_score=liveness_score,
-                is_genuine=None
+                is_genuine=None,
             )
             _record_verify_result("spoof_detected")
             _record_liveness_result(False)
@@ -388,7 +505,7 @@ class VerificationService:
             _observe_verify_latency(t_start)
 
             return {
-                "status": "spoof",
+                "status": "spoof_detected",
                 "liveness_passed": False,
                 "liveness": {
                     "score": liveness_score,
@@ -424,43 +541,27 @@ class VerificationService:
         # Check if matches requested user_id (by external_id)
         is_genuine: bool | None = None
         if user_id:
-            from app.db.repositories.user_repo import UserRepository
-            user_repo = UserRepository(embedding_repo.db)
-            expected_user = await user_repo.get_by_external_id(user_id)
-
-            if expected_user:
-                expected_user_id = getattr(expected_user, "id")
-
-                # Get all embeddings for this user and find best score
-                embeddings = await search_service.search_user_embeddings(expected_user_id)
-                if embeddings:
-                    embedding_vectors = np.stack(embeddings)
-                    centroid = np.mean(embedding_vectors, axis=0)
-                    centroid_norm = np.linalg.norm(centroid)
-                    if centroid_norm != 0:
-                        centroid = centroid / centroid_norm
-                        similarity = float(np.dot(embedding, centroid))
-                    else:
-                        similarity = 0.0
-                    matched_user_id = expected_user_id
-                    is_genuine = True
-                else:
-                    matched_user_id = expected_user_id
-                    is_genuine = False
-                    similarity = 0.0
+            is_genuine = await _resolve_is_genuine(
+                embedding_repo.db,
+                expected_external_user_id=user_id,
+                query_embedding=embedding,
+                top1_user_id=matched_user_id,
+            )
 
         decision = self.make_decision(embedding, top_k, liveness_signals, user_id=user_id)
         decision_status = decision["status"]
         decision_similarity = float(decision.get("similarity", similarity))
         decision_user_id = decision.get("user_id", matched_user_id)
 
-        await verification_repo.create_log(
+        await _store_verification_log(
             user_id=decision_user_id,
             similarity=decision_similarity,
             margin=margin,
             liveness_score=liveness_score,
             success=(decision_status == "match"),
             is_genuine=is_genuine,
+            query_embedding=embedding,
+            top1_user_id=matched_user_id,
         )
 
         total_time = (time.time() - t_start) * 1000
@@ -506,3 +607,82 @@ class VerificationService:
             "liveness_passed": liveness_passed,
             "replay_detected": replay_detected
         }
+
+    async def verify_face_sync(self, image_bytes: bytes) -> dict:
+        if self.embedding_repo is None:
+            raise RuntimeError("EmbeddingRepository is required for verify_face_sync")
+        if self.pipeline is None:
+            raise RuntimeError("Pipeline is required for verify_face_sync")
+
+        t_start = time.time()
+
+        # Keep the event loop responsive while the CPU-heavy pipeline runs.
+        result = await run_in_threadpool(self.pipeline.process, image_bytes)
+
+        return await self.verify_from_pipeline_result(
+            result,
+            image_bytes=image_bytes,
+            t_start=t_start,
+        )
+
+    async def _verify_face_impl(
+        self,
+        image_bytes: bytes,
+        user_id: Optional[str] = None,
+        require_liveness: bool = False,
+        check_replay: bool = True,
+        job_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        t_start = time.time()
+        try:
+            features = self.extract_features(image_bytes)
+        except ValueError as e:
+            if str(e) == "Invalid embedding vector":
+                _record_verify_result("no_match")
+                _observe_verify_latency(t_start)
+                return {
+                    "status": "no_match",
+                    "similarity": 0.0,
+                    "liveness_passed": None,
+                    "replay_detected": False,
+                }
+
+            logger.exception(
+                "pipeline_failed job_id=%s",
+                job_id,
+                extra=_log_extra(job_id, error=str(e)),
+            )
+
+            _record_verify_result("processing_failed")
+            _observe_verify_latency(t_start)
+
+            return {
+                "status": "processing_failed",
+                "liveness_passed": False,
+                "replay_detected": False,
+            }
+        except Exception as e:
+            logger.exception(
+                "pipeline_failed job_id=%s",
+                job_id,
+                extra=_log_extra(job_id, error=str(e)),
+            )
+
+            _record_verify_result("processing_failed")
+            _observe_verify_latency(t_start)
+
+            return {
+                "status": "processing_failed",
+                "liveness_passed": False,
+                "replay_detected": False,
+            }
+
+        return await self.verify_from_pipeline_result(
+            features,
+            image_bytes=image_bytes,
+            user_id=user_id,
+            require_liveness=require_liveness,
+            check_replay=check_replay,
+            job_id=job_id,
+            t_start=t_start,
+        )

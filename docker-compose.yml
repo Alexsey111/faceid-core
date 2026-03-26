@@ -18,7 +18,7 @@ x-worker-base: &worker-base
     - BACKPRESSURE_MAX_QUEUE_DELAY_MS=750
     - EMBED_BATCH_ENABLED=true
     - EMBED_BATCH_SIZE=6
-    - EMBED_BATCH_TIMEOUT_MS=5
+    - EMBED_BATCH_TIMEOUT_MS=10
     - EMBED_BATCH_MAX_WAIT_GUARD_MS=50
     - FAISS_ENABLED=${FAISS_ENABLED:-true}
     - MINIO_ENDPOINT=minio:9000
@@ -93,6 +93,7 @@ services:
       - "8000:8000"
     environment:
       - ENV=testing
+      - APP_ROLE=api
       - MODELS_DIR=/app/models
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
       - REDIS_URL=redis://redis:6379/0
@@ -105,7 +106,7 @@ services:
       - BACKPRESSURE_MAX_QUEUE_DELAY_MS=750
       - EMBED_BATCH_ENABLED=true
       - EMBED_BATCH_SIZE=6
-      - EMBED_BATCH_TIMEOUT_MS=5
+      - EMBED_BATCH_TIMEOUT_MS=10
       - EMBED_BATCH_MAX_WAIT_GUARD_MS=50
       - FAISS_ENABLED=${FAISS_ENABLED:-true}
       - MINIO_ENDPOINT=minio:9000
@@ -118,6 +119,70 @@ services:
         condition: service_started
       minio:
         condition: service_started
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    volumes:
+      - ./models:/app/models
+
+  fast_worker:
+    build:
+      context: .
+      dockerfile: faceid-core/infrastructure/docker/api.Dockerfile
+    environment:
+      - ENV=testing
+      - APP_ROLE=fast_worker
+      - MODELS_DIR=/app/models
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
+      - REDIS_URL=redis://redis:6379/0
+      - REDIS_HOST=redis
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - CELERYD_PREFETCH_MULTIPLIER=1
+      - WORKER_COUNT=8
+      - ASYNC_THROUGHPUT_PER_SEC=8
+      - BACKPRESSURE_MAX_QUEUE_DELAY_MS=750
+      - EMBED_BATCH_ENABLED=true
+      - EMBED_BATCH_SIZE=6
+      - EMBED_BATCH_TIMEOUT_MS=10
+      - EMBED_BATCH_MAX_WAIT_GUARD_MS=50
+      - FAISS_ENABLED=${FAISS_ENABLED:-true}
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - USE_FAST_PATH=true
+      - FAST_PATH_MAX_CONCURRENCY=4
+      - FAST_WORKER_URL=http://fast_worker:8000
+      - EMBED_BATCH_ENABLED=false
+      - FAST_WORKER_MAX_CONCURRENCY=1
+      - LIVENESS_ENABLED=false
+      - ONNX_INTRA_OP_THREADS=4
+      - ONNX_INTER_OP_THREADS=1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      minio:
+        condition: service_started
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    volumes:
+      - ./models:/app/models
+
+  worker:
+    build:
+      context: .
+      dockerfile: faceid-core/infrastructure/docker/worker.Dockerfile
+    deploy:
+      replicas: 2
+    environment:
+      - ENV=testing
+      - MODELS_DIR=/app/models
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
+      - REDIS_URL=redis://redis:6379/0
+      - REDIS_HOST=redis
+    command: python -m app.workers.verify_worker
+    depends_on:
+      - redis
+      - postgres
     volumes:
       - ./models:/app/models
 

@@ -129,3 +129,9 @@ SEARCH_LATENCY = Histogram(
     "Search latency",
     buckets=[0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2],
 )
+
+IS_GENUINE_MODE = Gauge(
+    "faceid_is_genuine_mode",
+    "Active is_genuine strategy",
+    ["mode"],
+)

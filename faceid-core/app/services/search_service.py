@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Dict, cast
+from typing import TYPE_CHECKING, ClassVar, List, Dict, cast
 
 import hashlib
 import json
@@ -32,7 +32,7 @@ class SearchService:
     3. CPU fallback по всем векторам
     """
 
-    _faiss_index: FaissIndex | None = None
+    _faiss_index: ClassVar[FaissIndex | None] = None
 
     def __init__(self, embedding_repo: "EmbeddingRepository"):
         self.embedding_repo = embedding_repo
