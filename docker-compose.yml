@@ -5,11 +5,12 @@ x-worker-base: &worker-base
     context: .
     dockerfile: faceid-core/infrastructure/docker/worker.Dockerfile
   environment:
-    - ENV=testing
+    - ENV=dev
     - MODELS_DIR=/app/models
     - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
     - REDIS_URL=redis://redis:6379/0
     - REDIS_HOST=redis
+    - PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
     - CELERY_BROKER_URL=redis://redis:6379/0
     - CELERY_RESULT_BACKEND=redis://redis:6379/0
     - CELERYD_PREFETCH_MULTIPLIER=1
@@ -33,6 +34,7 @@ x-worker-base: &worker-base
       condition: service_started
   volumes:
     - ./models:/app/models
+    - prometheus_multiproc:/tmp/prometheus
 
 services:
   postgres:
@@ -92,12 +94,13 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - ENV=testing
+      - ENV=dev
       - APP_ROLE=api
       - MODELS_DIR=/app/models
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
       - REDIS_URL=redis://redis:6379/0
       - REDIS_HOST=redis
+      - PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - CELERYD_PREFETCH_MULTIPLIER=1
@@ -119,21 +122,27 @@ services:
         condition: service_started
       minio:
         condition: service_started
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --loop uvloop --http httptools --backlog 2048
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     volumes:
       - ./models:/app/models
+      - prometheus_multiproc:/tmp/prometheus
 
   fast_worker:
     build:
       context: .
       dockerfile: faceid-core/infrastructure/docker/api.Dockerfile
     environment:
-      - ENV=testing
+      - ENV=dev
       - APP_ROLE=fast_worker
       - MODELS_DIR=/app/models
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
       - REDIS_URL=redis://redis:6379/0
       - REDIS_HOST=redis
+      - PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - CELERYD_PREFETCH_MULTIPLIER=1
@@ -163,28 +172,56 @@ services:
         condition: service_started
       minio:
         condition: service_started
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --loop uvloop --http httptools --backlog 2048
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     volumes:
       - ./models:/app/models
+      - prometheus_multiproc:/tmp/prometheus
 
   worker:
     build:
       context: .
       dockerfile: faceid-core/infrastructure/docker/worker.Dockerfile
     deploy:
-      replicas: 2
+      replicas: 3
     environment:
-      - ENV=testing
+      - ENV=dev
       - MODELS_DIR=/app/models
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
       - REDIS_URL=redis://redis:6379/0
       - REDIS_HOST=redis
+      - PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
     command: python -m app.workers.verify_worker
     depends_on:
       - redis
       - postgres
     volumes:
       - ./models:/app/models
+      - prometheus_multiproc:/tmp/prometheus
+
+  worker_metrics:
+    build:
+      context: .
+      dockerfile: faceid-core/infrastructure/docker/worker.Dockerfile
+    environment:
+      - ENV=dev
+      - MODELS_DIR=/app/models
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
+      - REDIS_URL=redis://redis:6379/0
+      - REDIS_HOST=redis
+      - PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
+    command: python -m app.workers.verify_worker
+    ports:
+      - "9103:9101"
+    depends_on:
+      - redis
+      - postgres
+    volumes:
+      - ./models:/app/models
+      - prometheus_multiproc:/tmp/prometheus
 
   worker_fast:
     <<: *worker-base
@@ -205,7 +242,24 @@ services:
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml
 
+  autoscaler:
+    build:
+      context: .
+      dockerfile: faceid-core/infrastructure/docker/autoscaler.Dockerfile
+    command: python autoscaler/autoscaler.py
+    network_mode: "host"
+    depends_on:
+      - prometheus
+    environment:
+      - PROMETHEUS_URL=http://localhost:9190
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    working_dir: /workspace/faceid-core
+    volumes:
+      - .:/workspace
+      - /var/run/docker.sock:/var/run/docker.sock
+
 volumes:
   postgres_data:
   minio_data:
   postgres_test_data:
+  prometheus_multiproc:

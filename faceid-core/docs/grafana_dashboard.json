@@ -1,0 +1,133 @@
+{
+  "title": "FaceID Core - Production",
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "5s",
+  "panels": [
+    {
+      "id": 1,
+      "type": "timeseries",
+      "title": "RPS",
+      "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(faceid_verify_result_total[5m]))",
+          "legendFormat": "verify_rps"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "Latency p95 (ms)",
+      "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(faceid_verify_duration_seconds_bucket[5m]))) * 1000",
+          "legendFormat": "total_latency_p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(faceid_verify_duration_seconds_bucket[5m]))) * 1000",
+          "legendFormat": "total_latency_p99"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(faceid_pipeline_ms_bucket[5m])))",
+          "legendFormat": "pipeline_p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(faceid_pipeline_ms_bucket[5m])))",
+          "legendFormat": "pipeline_p99"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Queue Delay p95 (ms)",
+      "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(faceid_queue_delay_ms_bucket[5m])))",
+          "legendFormat": "queue_delay_p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(faceid_queue_delay_ms_bucket[5m])))",
+          "legendFormat": "queue_delay_p99"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Quality Reject Rate",
+      "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum(rate(faceid_quality_reject_total[5m]))",
+          "legendFormat": "reject_rate"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Quality Reject by Reason",
+      "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "sum by (reason) (rate(faceid_quality_reject_total[5m]))",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "Pipeline Stage Timing (ms)",
+      "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(faceid_detect_ms_bucket[5m])))",
+          "legendFormat": "detect_p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(faceid_detect_ms_bucket[5m])))",
+          "legendFormat": "detect_p99"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(faceid_encode_ms_bucket[5m])))",
+          "legendFormat": "encode_p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(faceid_encode_ms_bucket[5m])))",
+          "legendFormat": "encode_p99"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Quality Gate Timing (ms)",
+      "gridPos": { "x": 0, "y": 24, "w": 24, "h": 8 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(faceid_quality_gate_pre_ms_bucket[5m])))",
+          "legendFormat": "pre_gate_p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(faceid_quality_gate_pre_ms_bucket[5m])))",
+          "legendFormat": "pre_gate_p99"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(faceid_quality_gate_face_ms_bucket[5m])))",
+          "legendFormat": "face_gate_p95"
+        },
+        {
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(faceid_quality_gate_face_ms_bucket[5m])))",
+          "legendFormat": "face_gate_p99"
+        }
+      ]
+    }
+  ]
+}

@@ -26,6 +26,7 @@ from app.services.backpressure import decrement_active
 from app.services.liveness_service import LivenessService
 from app.services.search_service import SearchService
 from app.services.verification_service import VerificationService
+from app.services.backpressure import QUEUE_DELAY_MS_KEY
 try:
     from app.monitoring.metrics import QUEUE_DELAY_MS, PIPELINE_MS, DETECT_MS, ENCODE_MS, LIVENESS_MS, LIVENESS_FAIL_COUNT
     METRICS_ENABLED = True
@@ -35,6 +36,7 @@ from celery.signals import worker_process_init
 from app.workers.celery_app import celery_app as app
 
 logger = logging.getLogger(__name__)
+worker_logger = logging.getLogger("worker")
 JOB_RESULT_TTL = 300
 _pipeline: FacePipeline | FacePipelineV2 | None = None
 _pipeline_warmed_up: bool = False
@@ -103,6 +105,13 @@ def _cache_job_result(job_id: str, payload: dict) -> None:
         pass
 
 
+def _store_queue_delay_ms(queue_delay_ms: float) -> None:
+    try:
+        redis_client.set(QUEUE_DELAY_MS_KEY, str(float(queue_delay_ms)), ttl=JOB_RESULT_TTL)
+    except Exception:
+        pass
+
+
 def _observe_worker_pipeline_metrics(timings: dict) -> None:
     if not METRICS_ENABLED:
         return
@@ -165,6 +174,7 @@ async def _process_verify_job(
     request_received_time: float | None,
 ) -> dict[str, object] | None:
     logger.warning("TASK START job_id=%s", job_id)
+    worker_logger.info("worker_job_started", extra={"job_id": job_id})
     print(f"[START] pid={os.getpid()} time={time.time()}", flush=True)
     try:
         minio_client = MinioClient()
@@ -172,6 +182,7 @@ async def _process_verify_job(
         queue_delay_ms = 0.0
         if request_received_time is not None:
             queue_delay_ms = max(0.0, (start_total - request_received_time) * 1000)
+        _store_queue_delay_ms(queue_delay_ms)
         if METRICS_ENABLED:
             try:
                 QUEUE_DELAY_MS.observe(float(queue_delay_ms))
@@ -266,6 +277,10 @@ async def _process_verify_job(
 
                 await db.commit()
 
+            worker_logger.info(
+                "worker_job_finished",
+                extra={"job_id": job_id, "status": result.get("status")},
+            )
             return result
 
         # optional liveness gate before search/decision
@@ -381,6 +396,11 @@ async def _process_verify_job(
             minio_client.delete_image(image_url)
         except Exception:
             pass
+
+        worker_logger.info(
+            "worker_job_finished",
+            extra={"job_id": job_id, "status": result.get("status")},
+        )
     except LookupError:
         logger.error("verify job not found", extra={"job_id": job_id})
         return

@@ -1,3 +1,5 @@
+# app/ml/detection/fast_detector.py
+
 import cv2
 import numpy as np
 

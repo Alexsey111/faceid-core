@@ -25,6 +25,9 @@ try:
         VERIFY_RESULT_COUNTER,
         LIVENESS_RESULT_COUNTER,
         LIVENESS_FAIL_COUNT,
+        QUALITY_REJECT_COUNTER,
+        QUALITY_GATE_PRE_MS,
+        QUALITY_GATE_FACE_MS,
         LIVENESS_MS,
         PIPELINE_STAGE_DURATION,
         PIPELINE_MS,
@@ -108,6 +111,14 @@ def _record_liveness_result(passed: Optional[bool]) -> None:
         try:
             value = _metric_bool(passed)
             LIVENESS_RESULT_COUNTER.labels(result=value).inc()
+        except Exception:
+            pass
+
+
+def _record_liveness_fail() -> None:
+    if METRICS_ENABLED:
+        try:
+            LIVENESS_FAIL_COUNT.inc()
         except Exception:
             pass
 
@@ -226,9 +237,19 @@ class VerificationService:
 
         result = self.pipeline.process(image_bytes)
 
+        if result.get("status") == "quality_reject":
+            return {
+                "status": "quality_reject",
+                "reason": result.get("quality_reason"),
+                "quality_details": result.get("quality_details", {}),
+                "timings": result.get("timings", {}),
+                "bbox": result.get("bbox"),
+                "bbox_source": result.get("bbox_source"),
+            }
+
         if result.get("status") == "spoof":
             liveness_score = result.get("liveness_score", result.get("confidence"))
-            LIVENESS_FAIL_COUNT.inc()
+            _record_liveness_fail()
             return {
                 "status": "spoof",
                 "liveness_passed": False,
@@ -236,6 +257,8 @@ class VerificationService:
                     "score": liveness_score,
                     "risk": "spoof",
                 },
+                "bbox": result.get("bbox"),
+                "bbox_source": result.get("bbox_source"),
                 "timings": result.get("timings", {}),
             }
 
@@ -251,6 +274,11 @@ class VerificationService:
         return {
             "embedding": embedding,
             "liveness": liveness,
+            "liveness_passed": result.get("liveness_passed"),
+            "liveness_score": result.get("liveness_score"),
+            "bbox": result.get("bbox"),
+            "bbox_source": result.get("bbox_source"),
+            "quality_details": result.get("quality_details"),
             "timings": result.get("timings", {}),
         }
 
@@ -329,6 +357,7 @@ class VerificationService:
         check_replay: bool = True,
         job_id: Optional[str] = None,
         t_start: float | None = None,
+        top_k: list[dict[str, Any]] | None = None,
     ) -> Dict[str, Any]:
         if self.embedding_repo is None:
             raise RuntimeError("EmbeddingRepository is required for verify_face")
@@ -413,6 +442,56 @@ class VerificationService:
             ),
         )
 
+        if features.get("status") == "quality_reject":
+            pipeline_time = features.get("timings", {})
+
+            if job_id is not None:
+                _observe_pipeline_metrics(pipeline_time)
+                if "total_pipeline_ms" in pipeline_time:
+                    _observe_stage("pipeline", float(pipeline_time["total_pipeline_ms"]))
+                if "quality_gate_pre_ms" in pipeline_time:
+                    _observe_stage("quality_gate_pre", float(pipeline_time["quality_gate_pre_ms"]))
+                if "quality_gate_face_ms" in pipeline_time:
+                    _observe_stage("quality_gate_face", float(pipeline_time["quality_gate_face_ms"]))
+
+            await _store_verification_log(
+                user_id=user_id_int,
+                similarity=0.0,
+                success=False,
+                margin=None,
+                liveness_score=None,
+                is_genuine=None,
+            )
+            if METRICS_ENABLED:
+                try:
+                    reason = features.get("reason") or "unknown"
+                    QUALITY_REJECT_COUNTER.labels(reason=reason).inc()
+                    if "quality_gate_pre_ms" in pipeline_time:
+                        QUALITY_GATE_PRE_MS.observe(
+                            float(pipeline_time["quality_gate_pre_ms"])
+                        )
+
+                    if "quality_gate_face_ms" in pipeline_time:
+                        QUALITY_GATE_FACE_MS.observe(
+                            float(pipeline_time["quality_gate_face_ms"])
+                        )
+                except Exception:
+                    pass
+            _record_verify_result(reason or "quality_reject")
+            _record_liveness_result(None)
+            _observe_verify_latency(t_start)
+
+            return {
+                "status": "quality_reject",
+                "reason": reason,
+                "quality_details": features.get("quality_details", {}),
+                "error_code": reason or "quality_reject",
+                "liveness_passed": None,
+                "replay_detected": replay_detected,
+                "bbox": features.get("bbox"),
+                "bbox_source": features.get("bbox_source"),
+            }
+
         if features.get("status") == "spoof":
             liveness_score = float(features.get("liveness_score", 0.0) or 0.0)
             liveness_risk = "spoof"
@@ -427,7 +506,7 @@ class VerificationService:
             )
             _record_verify_result("spoof_detected")
             _record_liveness_result(False)
-            LIVENESS_FAIL_COUNT.inc()
+            _record_liveness_fail()
             _observe_verify_latency(t_start)
 
             return {
@@ -501,7 +580,7 @@ class VerificationService:
             )
             _record_verify_result("spoof_detected")
             _record_liveness_result(False)
-            LIVENESS_FAIL_COUNT.inc()
+            _record_liveness_fail()
             _observe_verify_latency(t_start)
 
             return {
@@ -515,10 +594,13 @@ class VerificationService:
             }
 
         # VECTOR SEARCH (top-2 for margin calculation)
-        t0 = time.time()
-        top_k = await search_service.search_top_k(embedding, k=2)
-        search_time = (time.time() - t0) * 1000
-        _observe_stage("search", search_time)
+        if top_k is None:
+            t0 = time.time()
+            top_k = await search_service.search_top_k(embedding, k=2)
+            search_time = (time.time() - t0) * 1000
+            _observe_stage("search", search_time)
+        else:
+            search_time = 0.0
 
         top1_similarity = top_k[0]["similarity"] if top_k else 0.0
         top2_similarity = top_k[1]["similarity"] if len(top_k) > 1 else 0.0
@@ -577,10 +659,16 @@ class VerificationService:
                 total_ms=total_time,
             ),
         )
+        detect_ms = float(pipeline_time.get("detect_ms", 0.0))
+        if detect_ms == 0.0:
+            detect_ms = float(pipeline_time.get("fast_detect_ms", 0.0)) + float(
+                pipeline_time.get("fallback_detect_ms", 0.0)
+            )
+
         logger.warning(
             "stage_times job_id=%s detect_ms=%.3f embed_ms=%.3f search_ms=%.3f total_ms=%.3f faiss_enabled=%s",
             job_id,
-            float(pipeline_time.get("detect_ms", 0.0)),
+            detect_ms,
             float(pipeline_time.get("encode_ms", 0.0)),
             float(search_time),
             float(total_time),
@@ -588,7 +676,7 @@ class VerificationService:
         )
         print(
             f"stage_times job_id={job_id} "
-            f"detect_ms={float(pipeline_time.get('detect_ms', 0.0)):.3f} "
+            f"detect_ms={detect_ms:.3f} "
             f"embed_ms={float(pipeline_time.get('encode_ms', 0.0)):.3f} "
             f"search_ms={float(search_time):.3f} "
             f"total_ms={float(total_time):.3f} "
@@ -637,28 +725,26 @@ class VerificationService:
         try:
             features = self.extract_features(image_bytes)
         except ValueError as e:
-            if str(e) == "Invalid embedding vector":
+            error_message = str(e)
+
+            if "Invalid embedding vector" in error_message:
+                error_code = "embedding_error"
+                result_status = "no_match"
+
                 _record_verify_result("no_match")
-                _observe_verify_latency(t_start)
-                return {
-                    "status": "no_match",
-                    "similarity": 0.0,
-                    "liveness_passed": None,
-                    "replay_detected": False,
-                }
+            else:
+                error_code = "invalid_image"
+                result_status = "processing_failed"
 
-            logger.exception(
-                "pipeline_failed job_id=%s",
-                job_id,
-                extra=_log_extra(job_id, error=str(e)),
-            )
+                _record_verify_result("invalid_image")
 
-            _record_verify_result("processing_failed")
             _observe_verify_latency(t_start)
 
             return {
-                "status": "processing_failed",
-                "liveness_passed": False,
+                "status": result_status,
+                "error_code": error_code,
+                "similarity": 0.0,
+                "liveness_passed": None,
                 "replay_detected": False,
             }
         except Exception as e:
@@ -668,11 +754,23 @@ class VerificationService:
                 extra=_log_extra(job_id, error=str(e)),
             )
 
-            _record_verify_result("processing_failed")
+            error_str = str(e).lower()
+
+            if "no face" in error_str:
+                error_code = "no_face"
+            elif "multiple" in error_str:
+                error_code = "multiple_faces"
+            elif "decode" in error_str or "image" in error_str:
+                error_code = "invalid_image"
+            else:
+                error_code = "pipeline_error"
+
+            _record_verify_result(error_code)
             _observe_verify_latency(t_start)
 
             return {
                 "status": "processing_failed",
+                "error_code": error_code,
                 "liveness_passed": False,
                 "replay_detected": False,
             }

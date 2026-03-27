@@ -2,12 +2,12 @@ global:
   scrape_interval: 5s
 
 scrape_configs:
-  - job_name: "api"
+  - job_name: "faceid-api"
     static_configs:
       - targets: ["api:8000"]
-  - job_name: "worker_fast"
+  - job_name: "faceid-worker"
     static_configs:
-      - targets: ["worker_fast:9100"]
+      - targets: ["worker:9101"]
   - job_name: "worker_heavy"
     static_configs:
       - targets: ["worker_heavy:9100"]

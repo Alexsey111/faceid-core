@@ -1,7 +1,7 @@
 # embedding_repo.py - Репозиторий эмбеддингов
 
 import logging
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 from sqlalchemy import select, text
@@ -116,6 +116,79 @@ class EmbeddingRepository:
             }
             for row in rows
         ]
+
+    async def find_top_k_batch(
+        self,
+        embeddings: Sequence[np.ndarray],
+        k: int = 2,
+    ) -> list[list[dict]]:
+        """
+        Batched pgvector search for multiple query embeddings.
+        Returns one top-k list per input embedding, preserving order.
+        """
+        if not embeddings:
+            return []
+
+        normalized_embeddings: list[str] = []
+        for embedding in embeddings:
+            vector = np.asarray(embedding, dtype=np.float32)
+
+            norm = np.linalg.norm(vector)
+            if norm == 0.0:
+                raise ValueError("Invalid embedding vector")
+
+            vector = vector / norm
+            if vector.ndim != 1 or vector.shape[0] != 512:
+                raise ValueError("Query embedding must be a 512-dim vector")
+
+            normalized_embeddings.append("[" + ",".join(str(float(x)) for x in vector) + "]")
+
+        values_sql = ",\n".join(
+            f"({idx + 1}, CAST(:embedding_{idx} AS vector))"
+            for idx in range(len(normalized_embeddings))
+        )
+
+        query = text(f"""
+            WITH queries(idx, query_embedding) AS (
+                VALUES
+                {values_sql}
+            )
+            SELECT
+                q.idx,
+                r.user_id,
+                r.similarity
+            FROM queries q
+            JOIN LATERAL (
+                SELECT
+                    user_id,
+                    1 - (embedding <=> q.query_embedding) AS similarity
+                FROM embeddings
+                WHERE embedding IS NOT NULL
+                ORDER BY embedding <=> q.query_embedding
+                LIMIT :k
+            ) r ON true
+            ORDER BY q.idx, r.similarity DESC
+        """)
+
+        params = {f"embedding_{idx}": value for idx, value in enumerate(normalized_embeddings)}
+        params["k"] = k
+
+        result = await timed_db_call(
+            self.db.execute(query, params),
+            "embedding_repo.find_top_k_batch",
+        )
+        rows = result.fetchall()
+
+        grouped: list[list[dict]] = [[] for _ in embeddings]
+        for row in rows:
+            grouped[int(row.idx) - 1].append(
+                {
+                    "user_id": row.user_id,
+                    "similarity": float(row.similarity),
+                }
+            )
+
+        return grouped
 
     async def find_similar(
         self,

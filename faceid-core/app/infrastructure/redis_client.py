@@ -38,5 +38,8 @@ class RedisClient:
     def expire(self, key: str, ttl: int) -> None:
         self.client.expire(key, ttl)
 
+    def ping(self) -> bool:
+        return cast(bool, self.client.ping())
+
 
 redis_client = RedisClient()

@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import logging
+import random
 
 from app.core.config import settings
 from app.infrastructure.redis_client import redis_client
 
 IN_SYSTEM_KEY = "faceid:in_system"
+QUEUE_DELAY_MS_KEY = "faceid:queue_delay_ms"
 logger = logging.getLogger(__name__)
 
 
@@ -16,6 +18,31 @@ def current_active_requests() -> int:
         return max(0, int(raw_value or 0))
     except Exception:
         return 0
+
+
+def get_system_load() -> float:
+    try:
+        from app.monitoring.metrics import QUEUE_DELAY_MS  # noqa: F401
+
+        raw_value = redis_client.get(QUEUE_DELAY_MS_KEY)
+        return float(raw_value or 0.0)
+    except Exception:
+        return 0.0
+
+
+def get_backpressure_mode(queue_delay_ms: float) -> str:
+    if queue_delay_ms < 500:
+        return "normal"
+    elif queue_delay_ms < 1500:
+        return "degrade"
+    else:
+        return "shed"
+
+
+def should_drop_request(mode: str) -> bool:
+    if mode == "shed":
+        return random.random() < 0.5
+    return False
 
 
 def should_use_async(threshold: int | None = None) -> bool:
@@ -46,7 +73,7 @@ def try_reserve_fast_path_slot(max_active_requests: int | None = None) -> bool:
     return True
 
 
-def try_reserve_slot(max_queue_delay_ms: float = 1000.0) -> bool:
+def try_reserve_slot(max_queue_delay_ms: float = 2000.0) -> bool:
     in_system = redis_client.incr(IN_SYSTEM_KEY)
     redis_client.expire(IN_SYSTEM_KEY, 60)
     estimated_queue_delay_ms = estimate_queue_delay_ms(in_system)

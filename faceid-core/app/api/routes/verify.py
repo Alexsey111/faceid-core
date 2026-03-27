@@ -9,7 +9,6 @@ import logging
 import time
 from pathlib import Path
 from typing import Optional
-from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
@@ -24,7 +23,11 @@ from app.models.verification_job import JobStatus
 from app.schemas.verify import VerifyEnqueueResponse, VerifyRequest, VerifyResponse
 from app.services.backpressure import (
     decrement_active,
+    current_active_requests,
+    get_backpressure_mode,
+    get_system_load,
     should_use_async,
+    should_drop_request,
     try_reserve_fast_path_slot,
     try_reserve_slot,
 )
@@ -35,6 +38,7 @@ from app.services.fast_worker_circuit_breaker import (
     record_fast_worker_success,
 )
 from app.services.rate_limiter import RateLimiter
+from app.services.rate_limiter import get_inflight_limit, get_queue_delay
 from app.services.verification_service_factory import (
     get_verification_service,
     get_verification_service_without_pipeline,
@@ -58,6 +62,16 @@ def _normalize_priority(value: str | None) -> tuple[str, int]:
 
 def _pick_fast_worker_url() -> str:
     return settings.FAST_WORKER_URL
+
+
+def _get_request_id(request: Request) -> str:
+    request_id = getattr(request.state, "request_id", None)
+    if request_id:
+        return request_id
+
+    request_id = f"req-{int(time.time() * 1000)}"
+    request.state.request_id = request_id
+    return request_id
 
 
 def get_fast_worker_client() -> httpx.AsyncClient:
@@ -90,10 +104,21 @@ async def _call_fast_worker(
     upstream_http_ms = (time.perf_counter() - t0) * 1000.0
     resp.raise_for_status()
     data = resp.json()
-    if data.get("status") == "no_face":
-        return data, upstream_http_ms
+
     if not data:
         return data, upstream_http_ms
+
+    terminal_statuses = {
+        "no_face",
+        "spoof",
+        "spoof_detected",
+        "quality_reject",
+        "processing_failed",
+    }
+
+    if data.get("status") in terminal_statuses:
+        return data, upstream_http_ms
+
     if "embedding" not in data or data["embedding"] is None:
         raise HTTPException(status_code=502, detail="fast_worker returned invalid payload")
     return data, upstream_http_ms
@@ -163,7 +188,10 @@ async def verify_file(
     db: AsyncSession = Depends(get_db),
 ):
     """Verify face against reference via multipart/form-data."""
-    RateLimiter.check(http_request, "verify", limit=10)
+    queue_delay = get_queue_delay()
+    dynamic_limit = get_inflight_limit(queue_delay)
+
+    RateLimiter.check(http_request, "verify", limit=dynamic_limit)
 
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="Invalid image format")
@@ -190,7 +218,10 @@ async def verify_base64(
     db: AsyncSession = Depends(get_db),
 ):
     """Fast-path sync verify for low-load use, with Celery fallback."""
-    RateLimiter.check(http_request, "verify", limit=10)
+    queue_delay = get_queue_delay()
+    dynamic_limit = get_inflight_limit(queue_delay)
+
+    RateLimiter.check(http_request, "verify", limit=dynamic_limit)
 
     image_bytes = base64.b64decode(request.image)
 
@@ -246,7 +277,7 @@ async def verify_base64(
             get_fast_worker_failures(),
         )
 
-    job_id = str(uuid4())
+    job_id = _get_request_id(http_request)
     request_received_time = time.time()
     safe_filename = "legacy.jpg"
     object_name = f"verify/{job_id}/{safe_filename}"
@@ -290,7 +321,7 @@ async def verify_async(
         if len(image_bytes) > MAX_IMAGE_SIZE:
             raise HTTPException(status_code=400, detail="Image too large")
 
-        job_id = str(uuid4())
+        job_id = _get_request_id(http_request)
         request_received_time = time.time()
         safe_filename = Path(file.filename or "image.jpg").name
         object_name = f"verify/{job_id}/{safe_filename}"
@@ -324,8 +355,32 @@ async def verify_async_base64(
     db: AsyncSession = Depends(get_db),
 ):
     """Async verify via queue/workers for real load."""
+    queue_delay = get_system_load()
+    mode = get_backpressure_mode(queue_delay)
+    require_liveness = request.require_liveness
+    inflight = current_active_requests()
+    dynamic_limit = get_inflight_limit(queue_delay)
+
+    if mode == "degrade":
+        require_liveness = False
+
+    if mode == "shed" and should_drop_request(mode):
+        raise HTTPException(status_code=429, detail="Backpressure: shed")
+
+    if inflight >= dynamic_limit:
+        if mode == "normal":
+            logger.warning(f"INFLIGHT REJECT: {inflight}/{dynamic_limit}")
+            raise HTTPException(status_code=429, detail="inflight limit")
+        else:
+            # in degrade/shed we give the request a chance to proceed
+            pass
+
     if not try_reserve_slot(max_queue_delay_ms=float(settings.BACKPRESSURE_MAX_QUEUE_DELAY_MS)):
-        raise HTTPException(status_code=429, detail="Backpressure: queue_delay_sla")
+        if mode == "normal":
+            raise HTTPException(status_code=429, detail="Backpressure: queue")
+        else:
+            # in degrade/shed we give the request a chance to proceed
+            pass
 
     try:
         await asyncio.to_thread(RateLimiter.check, http_request, "verify_async", 5)
@@ -338,7 +393,7 @@ async def verify_async_base64(
         if len(image_bytes) > MAX_IMAGE_SIZE:
             raise HTTPException(status_code=400, detail="Image too large")
 
-        job_id = str(uuid4())
+        job_id = _get_request_id(http_request)
         request_received_time = time.time()
         object_name = f"verify/{job_id}/legacy.jpg"
 
@@ -350,7 +405,7 @@ async def verify_async_base64(
             object_name=object_name,
             content_type="image/jpeg",
             user_id=request.user_id,
-            require_liveness=request.require_liveness,
+            require_liveness=require_liveness,
             priority=priority,
         )
 

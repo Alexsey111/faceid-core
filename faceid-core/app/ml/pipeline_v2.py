@@ -16,6 +16,7 @@ from app.ml.embedding.onnx_arcface_encoder import OnnxArcFaceEncoder
 from app.ml.liveness.onnx_liveness import OnnxLivenessChecker
 from app.ml.liveness.model_paths import resolve_liveness_model_path
 from app.ml.preprocessing.image_preprocessor import ImagePreprocessor
+from app.ml.quality.image_quality_gate import ImageQualityGate
 from app.ml.detection.fast_detector import FastFaceDetector
 from app.ml.detection.retinaface_detector import RetinaFaceDetector
 from app.ml.utils.face_align import align_face
@@ -43,6 +44,7 @@ class FacePipelineV2:
         self._initialized = False
 
         self.preprocessor = ImagePreprocessor()
+        self.quality_gate = ImageQualityGate()
 
         self.fast_detector: Optional[FastFaceDetector] = None
         self.detector: Optional[RetinaFaceDetector] = None
@@ -73,7 +75,7 @@ class FacePipelineV2:
                     self.liveness_checker = None
             self._initialized = True
 
-    def process(self, image_bytes: bytes) -> Dict[str, Any]:
+    def prepare_face_input(self, image_bytes: bytes) -> Dict[str, Any]:
         self._init()
 
         assert self.fast_detector is not None, "fast_detector not initialized"
@@ -85,6 +87,22 @@ class FacePipelineV2:
         t0 = time.time()
         image = self.preprocessor.process(image_bytes)
         timings["preprocess_ms"] = (time.time() - t0) * 1000
+
+        # ----------------------------
+        # PRE-DETECT QUALITY GATE
+        # ----------------------------
+        t0 = time.time()
+        image_quality = self.quality_gate.evaluate_image(image)
+        timings["quality_gate_pre_ms"] = (time.time() - t0) * 1000
+
+        if not image_quality.passed:
+            timings["total_pipeline_ms"] = sum(timings.values())
+            return {
+                "status": "quality_reject",
+                "quality_reason": image_quality.reason,
+                "quality_details": image_quality.details,
+                "timings": timings,
+            }
 
         t0 = time.time()
         fast_faces = self.fast_detector.detect(image)
@@ -162,6 +180,28 @@ class FacePipelineV2:
         if detection is None or face_input is None:
             raise ValueError("Failed to prepare face input")
 
+        # ----------------------------
+        # POST-DETECT QUALITY GATE
+        # ----------------------------
+        t0 = time.time()
+        face_quality = self.quality_gate.evaluate_detection(
+            bbox=detection["bbox"],
+            landmarks=detection.get("landmarks"),
+        )
+        timings["quality_gate_face_ms"] = (time.time() - t0) * 1000
+
+        if not face_quality.passed:
+            timings["total_pipeline_ms"] = sum(timings.values())
+            return {
+                "status": "quality_reject",
+                "quality_reason": face_quality.reason,
+                "quality_details": face_quality.details,
+                "bbox": detection["bbox"],
+                "landmarks": detection.get("landmarks"),
+                "bbox_source": bbox_source,
+                "timings": timings,
+            }
+
         if face_input.size == 0:
             raise ValueError("Empty face crop")
 
@@ -181,7 +221,6 @@ class FacePipelineV2:
                 liveness_passed, liveness_score = self.liveness_checker.predict(face_input)
                 timings["liveness_ms"] = (time.time() - t0) * 1000
 
-                # --- FAIL FAST ---
                 if liveness_passed is False:
                     timings["total_pipeline_ms"] = sum(timings.values())
 
@@ -197,13 +236,44 @@ class FacePipelineV2:
 
             except Exception as e:
                 logger.warning("liveness_error: %s", str(e))
-
-                # FAIL-OPEN: do not break the pipeline
                 liveness_passed = None
                 liveness_score = None
 
+        return {
+            "status": "ok",
+            "face_input": face_input,
+            "bbox": detection["bbox"],
+            "landmarks": detection.get("landmarks"),
+            "liveness_passed": liveness_passed,
+            "liveness_score": liveness_score,
+            "bbox_source": bbox_source,
+            "quality_details": {
+                **image_quality.details,
+                **face_quality.details,
+            },
+            "timings": timings,
+        }
+    def process(self, image_bytes: bytes) -> Dict[str, Any]:
+        prepared = self.prepare_face_input(image_bytes)
+        if prepared["status"] != "ok":
+            return prepared
+
+        assert self.encoder is not None, "encoder not initialized"
+
+        face_input = prepared.pop("face_input")
+        timings = prepared["timings"]
+        bbox_source = prepared["bbox_source"]
+        bbox = prepared["bbox"]
+        landmarks = prepared.get("landmarks")
+        liveness_passed = prepared.get("liveness_passed")
+        liveness_score = prepared.get("liveness_score")
+        quality_details = prepared.get("quality_details")
+
         t0 = time.time()
-        embedding = self.encoder.encode(face_input)
+        embeddings = self.encoder.encode_batch([face_input])
+        if len(embeddings) == 0:
+            raise RuntimeError("Batch encoder returned no embeddings")
+        embedding = embeddings[0]
         timings["encode_ms"] = (time.time() - t0) * 1000
 
         if "liveness_ms" in timings and timings["liveness_ms"] > timings["encode_ms"]:
@@ -222,11 +292,12 @@ class FacePipelineV2:
         return {
             "status": "ok",
             "embedding": embedding,
-            "bbox": detection["bbox"],
-            "landmarks": detection.get("landmarks"),
+            "bbox": bbox,
+            "landmarks": landmarks,
             "liveness_passed": liveness_passed,
             "liveness_score": liveness_score,
             "bbox_source": bbox_source,
+            "quality_details": quality_details,
             "timings": timings,
         }
 

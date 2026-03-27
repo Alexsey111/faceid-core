@@ -1,6 +1,7 @@
 # app/services/verify_result_store.py
 
 import json
+import time
 import redis
 from typing import Any, Dict, Optional, cast
 
@@ -12,24 +13,43 @@ class VerifyResultStore:
     TTL = 300
 
     @staticmethod
-    def set_done(job_id: str, result: Dict[str, Any]):
+    def set_done(job_id: str, result: Dict[str, Any], metrics: Dict[str, Any]):
+        completed_at = metrics.get("finished_at", time.time())
         redis_client.setex(
             f"job:{job_id}",
             VerifyResultStore.TTL,
             json.dumps({
                 "status": "done",
-                "result": result
+                "result": result,
+                "metrics": metrics,
+                "completed_at": completed_at,
             })
         )
 
     @staticmethod
-    def set_error(job_id: str, error: str):
+    def set_error(job_id: str, error: str, metrics: Dict[str, Any]):
+        completed_at = metrics.get("finished_at", time.time())
         redis_client.setex(
             f"job:{job_id}",
             VerifyResultStore.TTL,
             json.dumps({
                 "status": "error",
-                "error": error
+                "error": error,
+                "metrics": metrics,
+                "completed_at": completed_at,
+            })
+        )
+
+    @staticmethod
+    def set_expired(job_id: str, metrics: Dict[str, Any]):
+        completed_at = metrics.get("finished_at", time.time())
+        redis_client.setex(
+            f"job:{job_id}",
+            VerifyResultStore.TTL,
+            json.dumps({
+                "status": "expired",
+                "metrics": metrics,
+                "completed_at": completed_at,
             })
         )
 

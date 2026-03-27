@@ -9,11 +9,11 @@ import threading
 import time
 from typing import Any
 from fastapi import FastAPI, Response
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, generate_latest, multiprocess
 import cv2
 import numpy as np
 import sqlalchemy as sa
-from app.core.logger import setup_logging
+from app.core.logging import setup_logging
 from app.api.router import router
 from app.api.routes.health import router as health_router
 from app.db.base import Base
@@ -36,6 +36,12 @@ logger = logging.getLogger(__name__)
 
 
 FAST_WORKER_SEMAPHORE = threading.Semaphore(max(1, int(settings.FAST_WORKER_MAX_CONCURRENCY)))
+
+
+def _prometheus_metrics_response() -> Response:
+    registry = CollectorRegistry()
+    multiprocess.MultiProcessCollector(registry)
+    return Response(generate_latest(registry), media_type=CONTENT_TYPE_LATEST)
 
 
 def _jsonable_pipeline_result(value) -> Any:
@@ -174,4 +180,4 @@ def verify_sync(request: VerifyRequest):
 
 @app.get("/metrics")
 def metrics():
-    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+    return _prometheus_metrics_response()
