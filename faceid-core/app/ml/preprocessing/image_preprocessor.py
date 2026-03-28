@@ -3,11 +3,18 @@
 import cv2
 import numpy as np
 
+from app.core.config import settings
+
 
 class ImagePreprocessor:
     """
     Prepares input image for ML pipeline.
     """
+
+    MAX_SIZE = 480
+
+    def __init__(self, max_side: int | None = None):
+        self.max_side = max_side or settings.PREPROCESS_MAX_SIDE or self.MAX_SIZE
 
     def decode(self, image_bytes: bytes) -> np.ndarray:
         """
@@ -25,24 +32,17 @@ class ImagePreprocessor:
         """
         Resize large images to reduce face detection cost.
 
-        Rules:
-        - max side > 2000 px -> resize to 960
-        - max side > 1200 px -> resize to 640
-        - otherwise keep original
+        Keep the long side under `MAX_SIZE` so detector work stays bounded.
         """
-        height, width = image.shape[:2]
-        max_side = max(height, width)
+        h, w = image.shape[:2]
+        max_side = max(h, w)
 
-        if max_side > 2000:
-            target_max_side = 960
-        elif max_side > 1200:
-            target_max_side = 640
-        else:
+        scale = self.max_side / float(max_side)
+        if scale >= 1.0:
             return image
 
-        scale = target_max_side / float(max_side)
-        new_width = max(1, int(round(width * scale)))
-        new_height = max(1, int(round(height * scale)))
+        new_width = max(1, int(w * scale))
+        new_height = max(1, int(h * scale))
 
         return cv2.resize(
             image,
@@ -69,6 +69,13 @@ class ImagePreprocessor:
         Returns BGR image (OpenCV format) in 0-255 range.
         """
         image = self.decode(image_bytes)
+        return self.process_image(image)
+
+    def process_image(self, image: np.ndarray) -> np.ndarray:
+        """
+        Full preprocessing pipeline for already decoded images.
+        Returns BGR image (OpenCV format) in 0-255 range.
+        """
         image = self.resize_if_needed(image)
 
         # InsightFace expects BGR image in 0-255 range

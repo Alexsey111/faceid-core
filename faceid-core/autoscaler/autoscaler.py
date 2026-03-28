@@ -1,24 +1,42 @@
+# faceid-core\autoscaler\autoscaler.py
+
 import math
 import os
 import logging
 import subprocess
 import time
+from typing import cast
 
 import requests
+import redis
 
 PROMETHEUS_URL = os.getenv("PROMETHEUS_URL", "http://localhost:9190")
 COMPOSE_SERVICE = "worker"
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+
+REDIS_POOL = redis.ConnectionPool.from_url(
+    REDIS_URL,
+    decode_responses=True,
+    max_connections=50,
+)
+
+redis_client = redis.Redis(connection_pool=REDIS_POOL)
 
 MIN_WORKERS = 2
-MAX_WORKERS = 6
+MAX_WORKERS = 8
+MIN_STABLE_WORKERS = 4
 
-SCALE_OUT_COOLDOWN = 120
-SCALE_IN_COOLDOWN = 600
+SCALE_OUT_COOLDOWN = 10
+SCALE_IN_COOLDOWN = 90
+REQUIRED_LOW_DELAY_CYCLES = 3
+MIN_UPTIME_BEFORE_SCALE_IN = 60  # seconds
+SCALE_IN_GRACE_PERIOD = 120  # seconds
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("autoscaler")
 
 last_scale_time = 0
+low_delay_counter = 0
 
 
 def query_prometheus(expr: str) -> float:
@@ -44,22 +62,24 @@ def query_prometheus(expr: str) -> float:
         return 0.0
 
 
-def get_queue_delay_p95():
+def get_queue_delay_ms():
+    try:
+        raw = redis_client.get("metrics:queue_delay_ms")
+        if raw is not None:
+            value = float(cast(str, raw))
+            if not math.isnan(value) and not math.isinf(value):
+                return value
+    except Exception as e:
+        logger.warning(f"redis_queue_delay_failed: {e}")
+
     return query_prometheus(
-        "histogram_quantile(0.95, sum by (le) (rate(faceid_queue_delay_ms_bucket[5m])))"
+        "histogram_quantile(0.95, sum by (le) (rate(faceid_async_job_queue_delay_ms_bucket[5m])))"
     )
 
 
 def get_queue_length():
     # Queue length is emitted by all worker replicas, so aggregate to one scalar.
     return query_prometheus("max(faceid_queue_jobs_pending)")
-
-
-def get_cpu_usage():
-    # Average CPU across all verify_worker containers.
-    return query_prometheus(
-        'avg(rate(container_cpu_usage_seconds_total{container=~"verify_worker.*"}[5m])) * 100'
-    )
 
 
 def get_current_workers():
@@ -95,11 +115,8 @@ def scale_workers(n: int):
                 "faceid-core",
                 "-f",
                 "/workspace/docker-compose.yml",
-                "up",
-                "-d",
-                "--scale",
+                "scale",
                 f"{COMPOSE_SERVICE}={n}",
-                COMPOSE_SERVICE,
             ],
             check=True,
         )
@@ -107,13 +124,29 @@ def scale_workers(n: int):
         logger.error(f"scale_failed: {e}")
 
 
-def decide_scale(current, queue_delay, queue_len, cpu):
+def decide_scale(current, queue_delay, queue_len):
+    global low_delay_counter
+
     # --- SCALE OUT ---
-    if queue_delay > 1000 or queue_len > 5 or cpu > 75:
+    if queue_delay > 200 or queue_len > 20:
+        low_delay_counter = 0
+
+        if queue_delay > 1000 or queue_len > 50:
+            return min(current + 2, MAX_WORKERS)
+
         return min(current + 1, MAX_WORKERS)
 
-    # --- SCALE IN ---
-    if queue_delay < 200 and queue_len < max(1, current - 1) and cpu < 40:
+    # --- TRACK LOW DELAY ---
+    if queue_delay < 20 and queue_len < 2:
+        low_delay_counter += 1
+    else:
+        low_delay_counter = 0
+
+    # --- SCALE IN (only if stable low) ---
+    if current <= MIN_STABLE_WORKERS:
+        return current
+
+    if low_delay_counter >= 5:
         return max(current - 1, MIN_WORKERS)
 
     return current
@@ -126,18 +159,16 @@ def main_loop():
         try:
             current = get_current_workers()
 
-            queue_delay = get_queue_delay_p95()
+            queue_delay = get_queue_delay_ms()
             queue_len = get_queue_length()
-            cpu = get_cpu_usage()
 
             logger.info(
                 f"workers={current} "
                 f"queue_delay={queue_delay:.1f}ms "
-                f"queue_len={queue_len:.1f} "
-                f"cpu={cpu:.1f}%"
+                f"queue_len={queue_len:.1f}"
             )
 
-            desired = decide_scale(current, queue_delay, queue_len, cpu)
+            desired = decide_scale(current, queue_delay, queue_len)
 
             now = time.time()
 
@@ -147,14 +178,17 @@ def main_loop():
                     last_scale_time = now
 
             elif desired < current:
+                if now - last_scale_time < SCALE_IN_GRACE_PERIOD:
+                    continue
                 if now - last_scale_time > SCALE_IN_COOLDOWN:
-                    scale_workers(desired)
-                    last_scale_time = now
+                    if now - last_scale_time > MIN_UPTIME_BEFORE_SCALE_IN:
+                        scale_workers(desired)
+                        last_scale_time = now
 
         except Exception as e:
             logger.exception(f"autoscaler_loop_error: {e}")
 
-        time.sleep(30)
+        time.sleep(5)
 
 
 if __name__ == "__main__":

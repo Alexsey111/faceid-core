@@ -36,7 +36,7 @@ class FacePipelineV2:
     5. ONNX ArcFace encode
     """
 
-    FAST_CONFIDENCE_THRESHOLD = 0.7
+    FAST_CONFIDENCE_THRESHOLD = 0.6
     FAST_BBOX_EXPAND_SCALE = 0.30
 
     def __init__(self):
@@ -75,48 +75,23 @@ class FacePipelineV2:
                     self.liveness_checker = None
             self._initialized = True
 
-    def prepare_face_input(self, image_bytes: bytes) -> Dict[str, Any]:
-        self._init()
-
-        assert self.fast_detector is not None, "fast_detector not initialized"
-        assert self.detector is not None, "retinaface detector not initialized"
-        assert self.encoder is not None, "encoder not initialized"
-
-        timings: Dict[str, float] = {}
-
-        t0 = time.time()
-        image = self.preprocessor.process(image_bytes)
-        timings["preprocess_ms"] = (time.time() - t0) * 1000
-
-        # ----------------------------
-        # PRE-DETECT QUALITY GATE
-        # ----------------------------
-        t0 = time.time()
-        image_quality = self.quality_gate.evaluate_image(image)
-        timings["quality_gate_pre_ms"] = (time.time() - t0) * 1000
-
-        if not image_quality.passed:
-            timings["total_pipeline_ms"] = sum(timings.values())
-            return {
-                "status": "quality_reject",
-                "quality_reason": image_quality.reason,
-                "quality_details": image_quality.details,
-                "timings": timings,
-            }
-
-        t0 = time.time()
-        fast_faces = self.fast_detector.detect(image)
-        timings["fast_detect_ms"] = (time.time() - t0) * 1000
+    def _prepare_face_from_detection(
+        self,
+        image: np.ndarray,
+        image_quality: Any,
+        fast_faces: list[list[float]],
+        timings: Dict[str, float],
+    ) -> Dict[str, Any]:
+        detector = self.detector
+        assert detector is not None, "retinaface detector not initialized"
 
         detection: Dict[str, Any] | None = None
         face_input: np.ndarray | None = None
         bbox_source = "fast"
 
         if len(fast_faces) == 1:
-            x1, y1, x2, y2, confidence = fast_faces[0]
-
-            if confidence < self.FAST_CONFIDENCE_THRESHOLD:
-                raise ValueError("Face not detected")
+            x1_f, y1_f, x2_f, y2_f, confidence = fast_faces[0]
+            x1, y1, x2, y2 = map(int, (x1_f, y1_f, x2_f, y2_f))
 
             h, w = image.shape[:2]
             x1, y1, x2, y2 = self._expand_bbox(
@@ -128,24 +103,11 @@ class FacePipelineV2:
             if roi.mean() < 5:
                 raise ValueError("bad crop")
 
-            if confidence >= 0.8:
+            if confidence >= self.FAST_CONFIDENCE_THRESHOLD:
                 face_input = cv2.resize(roi, (112, 112))
-                bbox_source = "fast_only_high_conf"
+                bbox_source = "fast_only"
             else:
-                detections = self.detector.detect(roi)
-
-                if detections and len(detections) == 1:
-                    det = detections[0]
-
-                    if det.get("landmarks") is not None:
-                        face_input = align_face(roi, det["landmarks"])
-                        bbox_source = "fast+retina"
-                    else:
-                        face_input = roi
-                        bbox_source = "fast_crop"
-                else:
-                    face_input = roi
-                    bbox_source = "fast_only_fallback"
+                raise ValueError("Face not detected")
 
             detection = {
                 "bbox": [x1, y1, x2, y2],
@@ -155,7 +117,7 @@ class FacePipelineV2:
 
         elif len(fast_faces) == 0:
             t0 = time.time()
-            detections = self.detector.detect(image)
+            detections = detector.detect(image)
             timings["fallback_detect_ms"] = (time.time() - t0) * 1000
 
             if not detections:
@@ -253,6 +215,164 @@ class FacePipelineV2:
             },
             "timings": timings,
         }
+
+    def prepare_face_input(self, image_bytes: bytes) -> Dict[str, Any]:
+        self._init()
+
+        assert self.fast_detector is not None, "fast_detector not initialized"
+        assert self.detector is not None, "retinaface detector not initialized"
+        assert self.encoder is not None, "encoder not initialized"
+
+        timings: Dict[str, float] = {}
+
+        t0 = time.time()
+        image = self.preprocessor.process(image_bytes)
+        timings["preprocess_ms"] = (time.time() - t0) * 1000
+
+        t0 = time.time()
+        image_quality = self.quality_gate.evaluate_image(image)
+        timings["quality_gate_pre_ms"] = (time.time() - t0) * 1000
+
+        if not image_quality.passed:
+            timings["total_pipeline_ms"] = sum(timings.values())
+            return {
+                "status": "quality_reject",
+                "quality_reason": image_quality.reason,
+                "quality_details": image_quality.details,
+                "timings": timings,
+            }
+
+        t0 = time.time()
+        fast_faces = self.fast_detector.detect(image)
+        timings["fast_detect_ms"] = (time.time() - t0) * 1000
+
+        return self._prepare_face_from_detection(image, image_quality, fast_faces, timings)
+
+    def prepare_face_input_from_image(self, image: np.ndarray) -> Dict[str, Any]:
+        self._init()
+
+        assert self.fast_detector is not None, "fast_detector not initialized"
+        assert self.detector is not None, "retinaface detector not initialized"
+        assert self.encoder is not None, "encoder not initialized"
+
+        timings: Dict[str, float] = {}
+
+        t0 = time.time()
+        image = self.preprocessor.process_image(image)
+        timings["preprocess_ms"] = (time.time() - t0) * 1000
+
+        t0 = time.time()
+        image_quality = self.quality_gate.evaluate_image(image)
+        timings["quality_gate_pre_ms"] = (time.time() - t0) * 1000
+
+        if not image_quality.passed:
+            timings["total_pipeline_ms"] = sum(timings.values())
+            return {
+                "status": "quality_reject",
+                "quality_reason": image_quality.reason,
+                "quality_details": image_quality.details,
+                "timings": timings,
+            }
+
+        t0 = time.time()
+        fast_faces = self.fast_detector.detect(image)
+        timings["fast_detect_ms"] = (time.time() - t0) * 1000
+
+        return self._prepare_face_from_detection(image, image_quality, fast_faces, timings)
+
+    def prepare_face_inputs(self, image_bytes_list: list[bytes]) -> list[Dict[str, Any]]:
+        self._init()
+
+        assert self.fast_detector is not None, "fast_detector not initialized"
+
+        images: list[np.ndarray] = []
+        image_qualities: list[Any] = []
+        timings_list: list[Dict[str, float]] = []
+        results: list[Dict[str, Any]] = []
+
+        for image_bytes in image_bytes_list:
+            timings: Dict[str, float] = {}
+            t0 = time.time()
+            image = self.preprocessor.process(image_bytes)
+            timings["preprocess_ms"] = (time.time() - t0) * 1000
+
+            t0 = time.time()
+            image_quality = self.quality_gate.evaluate_image(image)
+            timings["quality_gate_pre_ms"] = (time.time() - t0) * 1000
+
+            images.append(image)
+            image_qualities.append(image_quality)
+            timings_list.append(timings)
+
+        fast_faces_list = self.fast_detector.detect_batch(images)
+
+        for image, image_quality, fast_faces, timings in zip(
+            images, image_qualities, fast_faces_list, timings_list
+        ):
+            if not image_quality.passed:
+                timings["total_pipeline_ms"] = sum(timings.values())
+                results.append(
+                    {
+                        "status": "quality_reject",
+                        "quality_reason": image_quality.reason,
+                        "quality_details": image_quality.details,
+                        "timings": timings,
+                    }
+                )
+                continue
+
+            results.append(
+                self._prepare_face_from_detection(image, image_quality, fast_faces, timings)
+            )
+
+        return results
+
+    def prepare_face_inputs_from_images(self, images: list[np.ndarray]) -> list[Dict[str, Any]]:
+        self._init()
+
+        assert self.fast_detector is not None, "fast_detector not initialized"
+
+        image_qualities: list[Any] = []
+        timings_list: list[Dict[str, float]] = []
+        processed_images: list[np.ndarray] = []
+        results: list[Dict[str, Any]] = []
+
+        for image in images:
+            timings: Dict[str, float] = {}
+            t0 = time.time()
+            processed_image = self.preprocessor.process_image(image)
+            timings["preprocess_ms"] = (time.time() - t0) * 1000
+
+            t0 = time.time()
+            image_quality = self.quality_gate.evaluate_image(processed_image)
+            timings["quality_gate_pre_ms"] = (time.time() - t0) * 1000
+
+            processed_images.append(processed_image)
+            image_qualities.append(image_quality)
+            timings_list.append(timings)
+
+        fast_faces_list = self.fast_detector.detect_batch(processed_images)
+
+        for image, image_quality, fast_faces, timings in zip(
+            processed_images, image_qualities, fast_faces_list, timings_list
+        ):
+            if not image_quality.passed:
+                timings["total_pipeline_ms"] = sum(timings.values())
+                results.append(
+                    {
+                        "status": "quality_reject",
+                        "quality_reason": image_quality.reason,
+                        "quality_details": image_quality.details,
+                        "timings": timings,
+                    }
+                )
+                continue
+
+            results.append(
+                self._prepare_face_from_detection(image, image_quality, fast_faces, timings)
+            )
+
+        return results
     def process(self, image_bytes: bytes) -> Dict[str, Any]:
         prepared = self.prepare_face_input(image_bytes)
         if prepared["status"] != "ok":

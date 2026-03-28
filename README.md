@@ -182,7 +182,7 @@ API:
   лёгкий orchestration слой
 
 Workers:
-  replicas = 2
+  replicas = 4
   semaphore = 2
 
 Runtime:

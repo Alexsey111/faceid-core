@@ -9,6 +9,8 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
+from app.core.config import settings
+
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +34,8 @@ class OnnxArcFaceEncoder:
 
         # Для CPU single-request path обычно лучше фиксировать intra/inter threads.
         # Значения 1/1 или 2/1 часто лучше дефолта; зависит от машины.
-        so.intra_op_num_threads = 1
-        so.inter_op_num_threads = 1
+        so.intra_op_num_threads = max(1, int(settings.ONNX_INTRA_OP_THREADS))
+        so.inter_op_num_threads = max(1, int(settings.ONNX_INTER_OP_THREADS))
 
         # Уменьшаем шум логов ORT
         so.log_severity_level = 3
@@ -69,23 +71,36 @@ class OnnxArcFaceEncoder:
         if face_crop.shape[:2] != self.INPUT_SIZE:
             face_crop = cv2.resize(face_crop, self.INPUT_SIZE)
 
-        # Один contiguous pass перед transpose
-        face_crop = np.ascontiguousarray(face_crop)
-
-        # ArcFace обычно ждёт RGB + normalize to [-1, 1]
-        img = cv2.cvtColor(face_crop, cv2.COLOR_BGR2RGB)
-        img = img.astype(np.float32, copy=False)
-        img = (img - 127.5) / 128.0
-
-        img = np.transpose(img, (2, 0, 1))
-        img = np.expand_dims(img, axis=0)
-
-        return np.ascontiguousarray(img, dtype=np.float32)
+        # One-shot blob creation avoids extra cvtColor/transpose/astype passes.
+        return cv2.dnn.blobFromImage(
+            face_crop,
+            scalefactor=1.0 / 128.0,
+            size=self.INPUT_SIZE,
+            mean=(127.5, 127.5, 127.5),
+            swapRB=True,
+            crop=False,
+        )
 
     def _preprocess_batch(self, face_crops: Sequence[np.ndarray]) -> np.ndarray:
-        batch = [self._preprocess_single(face)[0] for face in face_crops]
-        arr = np.stack(batch, axis=0)
-        return np.ascontiguousarray(arr, dtype=np.float32)
+        if not face_crops:
+            return np.empty((0, 3, self.INPUT_SIZE[1], self.INPUT_SIZE[0]), dtype=np.float32)
+
+        resized_crops = []
+        for face_crop in face_crops:
+            if face_crop.size == 0:
+                raise ValueError("Empty face crop")
+            if face_crop.shape[:2] != self.INPUT_SIZE:
+                face_crop = cv2.resize(face_crop, self.INPUT_SIZE)
+            resized_crops.append(face_crop)
+
+        return cv2.dnn.blobFromImages(
+            resized_crops,
+            scalefactor=1.0 / 128.0,
+            size=self.INPUT_SIZE,
+            mean=(127.5, 127.5, 127.5),
+            swapRB=True,
+            crop=False,
+        )
 
     def _l2_normalize(self, embedding: np.ndarray) -> np.ndarray:
         norm = np.linalg.norm(embedding)

@@ -8,6 +8,7 @@ import hashlib
 import json
 import redis
 import numpy as np
+from time import perf_counter
 
 from app.core.config import settings
 from app.monitoring.metrics import (
@@ -15,10 +16,19 @@ from app.monitoring.metrics import (
     REDIS_HIT,
     DB_FALLBACK,
     ERROR_COUNTER,
+    REDIS_COMMAND_LATENCY_MS,
     SEARCH_BACKEND_COUNTER,
     SEARCH_LATENCY,
 )
 from app.services.faiss_index import FaissIndex
+
+REDIS_POOL = redis.ConnectionPool(
+    host=getattr(settings, "REDIS_HOST", "localhost"),
+    port=getattr(settings, "REDIS_PORT", 6379),
+    db=getattr(settings, "REDIS_DB", 0),
+    decode_responses=True,
+    max_connections=50,
+)
 
 if TYPE_CHECKING:
     from app.db.repositories.embedding_repo import EmbeddingRepository
@@ -42,11 +52,7 @@ class SearchService:
             SearchService._faiss_index = FaissIndex()
 
         if getattr(settings, "REDIS_ENABLED", False):
-            self._redis = redis.Redis(
-                host=getattr(settings, "REDIS_HOST", "localhost"),
-                port=getattr(settings, "REDIS_PORT", 6379),
-                decode_responses=True,
-            )
+            self._redis = redis.Redis(connection_pool=REDIS_POOL)
 
     def add_embedding(self, vector: np.ndarray, user_id: int) -> None:
         if settings.FAISS_ENABLED and SearchService._faiss_index is not None:
@@ -78,7 +84,11 @@ class SearchService:
                 if self._redis is not None:
                     try:
                         cache_key = f"faceid:search:{self._hash_embedding(query)}:{k}"
+                        start = perf_counter()
                         cached = self._redis.get(cache_key)
+                        REDIS_COMMAND_LATENCY_MS.labels(command="search_cache_get").observe(
+                            (perf_counter() - start) * 1000.0
+                        )
                         if cached is not None:
                             REDIS_HIT.labels(
                                 endpoint="search_top_k",
@@ -98,7 +108,11 @@ class SearchService:
                         if results:
                             if self._redis is not None and cache_key is not None:
                                 try:
+                                    start = perf_counter()
                                     self._redis.setex(cache_key, 3600, json.dumps(results))
+                                    REDIS_COMMAND_LATENCY_MS.labels(command="search_cache_setex").observe(
+                                        (perf_counter() - start) * 1000.0
+                                    )
                                 except Exception:
                                     pass
                             FAISS_HIT.labels(
@@ -121,7 +135,11 @@ class SearchService:
                         if results:
                             if self._redis is not None and cache_key is not None:
                                 try:
+                                    start = perf_counter()
                                     self._redis.setex(cache_key, 3600, json.dumps(results))
+                                    REDIS_COMMAND_LATENCY_MS.labels(command="search_cache_setex").observe(
+                                        (perf_counter() - start) * 1000.0
+                                    )
                                 except Exception:
                                     pass
                             DB_FALLBACK.labels(
@@ -167,7 +185,11 @@ class SearchService:
 
                     if result and self._redis is not None and cache_key is not None:
                         try:
+                            start = perf_counter()
                             self._redis.setex(cache_key, 3600, json.dumps(result))
+                            REDIS_COMMAND_LATENCY_MS.labels(command="search_cache_setex").observe(
+                                (perf_counter() - start) * 1000.0
+                            )
                         except Exception:
                             pass
 

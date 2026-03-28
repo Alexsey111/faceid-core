@@ -2,6 +2,11 @@
 
 ## How To Read The Dashboard
 
+Benchmark note:
+- The first valid E2E sweep was used to validate the queue policy and `/wait` shape.
+- The next scaling pass should read `queue_delay`, `processing_time`, `total_latency`, and drain rate from Prometheus instead of treating `/wait` as the primary measurement source.
+- That makes the comparison less sensitive to polling behavior and client-side wait time.
+
 ### 1. Queue Delay Is The Main Signal
 - If `queue_delay_p95` goes up, the workers are overloaded.
 - This is the primary CPU saturation signal.

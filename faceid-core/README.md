@@ -1,85 +1,160 @@
-# FaceID Core
+# FaceID Core — Async Pipeline Baseline (perf/async-scaling-baseline)
 
-## SLA And Load Profile
+## 📌 Контекст
 
-The system has two different verification paths with different service goals:
+Данная ветка фиксирует **стабильное baseline-состояние асинхронного pipeline** после устранения искусственных bottleneck'ов и проведения первичного performance-тюнинга.
 
-- `/verify`
-  - synchronous path
-  - target: low latency
-  - should be treated as a strict user-facing endpoint
-- `/verify_async`
-  - queued path
-  - target: throughput and backpressure control
-  - latency is allowed to degrade under load
+---
 
-### FaceID Core v1.0 baseline
+## 🧠 Архитектура
 
-This release should be treated as a stable, controlled baseline:
-
-- `RATE <= 3` -> OK
-- `RATE ~= 5` -> degraded, but controlled
-- `RATE >= 6` -> stress, `429` responses are expected
-
-Current operating limits:
-
-- CPU-only inference
-- adaptive batching enabled
-- backpressure enabled with `750 ms` queue-delay guard
-
-Important:
-
-- `429` is not an application error here
-- it is the protection mechanism that keeps queue delay from growing without bound
-- this behavior is part of the design, not a temporary workaround
-
-### Passive liveness artifact
-
-Canonical model file:
-
-- `models/liveness.onnx`
-
-Legacy-compatible fallback:
-
-- `models/antispoof.onnx`
-
-Runtime behavior:
-
-- Prefer `liveness.onnx`
-- Fall back to `antispoof.onnx`
-- Disable liveness gracefully if neither file exists
-
-Recommended deployment flow:
-
-1. Copy the ONNX model into `models/liveness.onnx`
-2. Rebuild and restart the stack
-3. Verify the worker metrics endpoint exposes `faceid_liveness_ms_*`
-
-### Operational load bands
-
-The async path is intentionally tuned around the following load bands:
-
-| `RATE` | Mode | Expected behavior |
-|---|---|---|
-| `RATE <= 2` | Stable low latency | Queue delay should stay short and the system should feel responsive |
-| `RATE ~= 5` | Working mode | This is the intended steady-state operating point |
-| `RATE >= 8` | Stress | Degradation is acceptable, but the system should still reject early instead of building an unbounded queue |
-
-### Backpressure rules
-
-- Reject when estimated queue delay would exceed `750 ms`
-- Keep batching adaptive:
-  - bypass batching at low load
-  - batch at moderate/high load
-  - flush a batch early if the oldest request waits too long
-- Keep test and production databases isolated
-
-### Test setup
-
-Integration and end-to-end tests run against a separate PostgreSQL instance on port `5433` and apply migrations with Alembic before the suite starts.
-
-### Local verification
-
-```bash
-pytest -q
 ```
+
+Client
+→ API (/verify_async)
+→ Redis queue
+→ Workers (detect → encode → liveness → search)
+→ Redis result store
+→ API (/jobs/{job_id}/wait)
+
+````
+
+---
+
+## ⚙️ Конфигурация baseline
+
+```text
+workers = 4
+semaphore = 2
+batching = enabled
+mode = async
+````
+
+---
+
+## 📊 Производительность (single node)
+
+### Тест
+
+* k6 (constant-vus)
+* duration: 60s
+* endpoint: [http://localhost:8000](http://localhost:8000)
+
+---
+
+### Результаты
+
+| Метрика             | Значение         |
+| ------------------- | ---------------- |
+| throughput          | ~11.8 jobs/sec   |
+| processing_time p95 | ~560 ms          |
+| queue_delay p95     | ~6 ms            |
+| CPU usage           | ~180% (≈ 2 ядра) |
+
+---
+
+## 📌 Ключевые выводы
+
+### ✅ Очередь больше не bottleneck
+
+```
+queue_delay ≈ 6 ms
+```
+
+---
+
+### ✅ Pipeline стабилен
+
+```
+processing_time p95 ≈ 560 ms
+```
+
+---
+
+### ❗ Система CPU-bound
+
+```
+CPU ≈ 180–190%
+```
+
+---
+
+### ❗ semaphore > 2 не даёт выигрыша
+
+```
+sem=2 ≈ sem=3 по throughput
+```
+
+---
+
+## 📐 Capacity
+
+```
+≈ 12 jobs/sec на одну ноду
+```
+
+---
+
+## 🚫 Что сознательно НЕ используется
+
+* aggressive enqueue reject logic
+* SLA-based admission
+* queue-based throttling
+
+---
+
+## 🔬 Что было оптимизировано
+
+* batch DB operations
+* worker concurrency (semaphore)
+* batching pipeline
+* устранён enqueue bottleneck
+
+---
+
+## ⚠️ Ограничения
+
+* система упирается в CPU
+* масштабирование внутри одной ноды ограничено
+* LB (api_lb) нестабилен (502), не используется в тестах
+
+---
+
+## 🚀 Дальнейшие шаги
+
+### 1. Горизонтальное масштабирование
+
+```
+N nodes → N × 12 jobs/sec
+```
+
+---
+
+### 2. Усиление batching
+
+* batch_size → 12 / 16
+* проверить влияние на latency и CPU
+
+---
+
+### 3. Оптимизация pipeline
+
+* ускорение detect/encode
+* снижение CPU cost
+
+---
+
+### 4. Исправление Load Balancer
+
+* устранить 502
+* подготовить production ingress
+
+---
+
+## 📎 Важно
+
+* данная ветка является baseline
+* все дальнейшие изменения должны сравниваться с ней
+* перед изменениями фиксировать метрики
+
+-

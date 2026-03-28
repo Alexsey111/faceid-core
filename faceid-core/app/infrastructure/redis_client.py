@@ -5,17 +5,20 @@ from typing import cast
 
 from app.core.config import settings
 
+_REDIS_POOL = redis.ConnectionPool(
+    host=settings.REDIS_HOST,
+    port=settings.REDIS_PORT,
+    db=settings.REDIS_DB,
+    decode_responses=True,
+    max_connections=50,
+)
+
 
 class RedisClient:
 
     def __init__(self):
 
-        self.client = redis.Redis(
-            host=settings.REDIS_HOST,
-            port=settings.REDIS_PORT,
-            db=settings.REDIS_DB,
-            decode_responses=True
-        )
+        self.client = redis.Redis(connection_pool=_REDIS_POOL)
 
     def get(self, key: str) -> str | None:
         return cast(str | None, self.client.get(key))
@@ -34,6 +37,9 @@ class RedisClient:
 
     def decr(self, key: str, amount: int = 1) -> int:
         return cast(int, self.client.decr(key, amount))
+
+    def llen(self, key: str) -> int:
+        return cast(int, self.client.llen(key))
 
     def expire(self, key: str, ttl: int) -> None:
         self.client.expire(key, ttl)

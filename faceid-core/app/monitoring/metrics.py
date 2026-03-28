@@ -188,6 +188,25 @@ SEARCH_LATENCY = Histogram(
     buckets=[0.001, 0.005, 0.01, 0.02, 0.05, 0.1, 0.2],
 )
 
+REDIS_COMMAND_LATENCY_MS = Histogram(
+    "faceid_redis_command_latency_ms",
+    "Redis command latency",
+    ["command"],
+    buckets=[0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000],
+)
+
+QUEUE_PUSH_LATENCY_MS = Histogram(
+    "faceid_queue_push_latency_ms",
+    "Async queue push latency",
+    buckets=[0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000],
+)
+
+QUEUE_POP_LATENCY_MS = Histogram(
+    "faceid_queue_pop_latency_ms",
+    "Async queue pop latency",
+    buckets=[0.05, 0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000],
+)
+
 IS_GENUINE_MODE = Gauge(
     "faceid_is_genuine_mode",
     "Active is_genuine strategy",

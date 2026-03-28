@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.crypto import decrypt_vector, encrypt_vector
+from app.monitoring.metrics import SEARCH_LATENCY
 from app.models.embedding import Embedding
 from app.models.user import User
 from app.monitoring.db_metrics import timed_db_call
@@ -97,16 +98,17 @@ class EmbeddingRepository:
             LIMIT :k
         """)
 
-        result = await timed_db_call(
-            self.db.execute(
-                query,
-                {
-                    "embedding": embedding_str,
-                    "k": k,
-                },
-            ),
-            "embedding_repo.find_top_k",
-        )
+        with SEARCH_LATENCY.time():
+            result = await timed_db_call(
+                self.db.execute(
+                    query,
+                    {
+                        "embedding": embedding_str,
+                        "k": k,
+                    },
+                ),
+                "embedding_repo.find_top_k",
+            )
         rows = result.fetchall()
 
         return [
@@ -173,10 +175,11 @@ class EmbeddingRepository:
         params = {f"embedding_{idx}": value for idx, value in enumerate(normalized_embeddings)}
         params["k"] = k
 
-        result = await timed_db_call(
-            self.db.execute(query, params),
-            "embedding_repo.find_top_k_batch",
-        )
+        with SEARCH_LATENCY.time():
+            result = await timed_db_call(
+                self.db.execute(query, params),
+                "embedding_repo.find_top_k_batch",
+            )
         rows = result.fetchall()
 
         grouped: list[list[dict]] = [[] for _ in embeddings]

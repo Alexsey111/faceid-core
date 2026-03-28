@@ -4,6 +4,10 @@ x-worker-base: &worker-base
   build:
     context: .
     dockerfile: faceid-core/infrastructure/docker/worker.Dockerfile
+  deploy:
+    resources:
+      limits:
+        cpus: "2.0"
   environment:
     - ENV=dev
     - MODELS_DIR=/app/models
@@ -15,13 +19,17 @@ x-worker-base: &worker-base
     - CELERY_RESULT_BACKEND=redis://redis:6379/0
     - CELERYD_PREFETCH_MULTIPLIER=1
     - WORKER_COUNT=8
+    - WORKER_SEMAPHORE=${WORKER_SEMAPHORE:-2}
     - ASYNC_THROUGHPUT_PER_SEC=8
     - BACKPRESSURE_MAX_QUEUE_DELAY_MS=750
     - EMBED_BATCH_ENABLED=true
-    - EMBED_BATCH_SIZE=6
+    - EMBED_BATCH_SIZE=8
     - EMBED_BATCH_TIMEOUT_MS=10
     - EMBED_BATCH_MAX_WAIT_GUARD_MS=50
-    - FAISS_ENABLED=${FAISS_ENABLED:-true}
+    - LIVENESS_ENABLED=false
+    - FAISS_ENABLED=false
+    - ONNX_INTRA_OP_THREADS=2
+    - ONNX_INTER_OP_THREADS=1
     - MINIO_ENDPOINT=minio:9000
     - MINIO_ACCESS_KEY=minioadmin
     - MINIO_SECRET_KEY=minioadmin
@@ -105,13 +113,17 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - CELERYD_PREFETCH_MULTIPLIER=1
       - WORKER_COUNT=8
+      - WORKER_SEMAPHORE=${WORKER_SEMAPHORE:-2}
       - ASYNC_THROUGHPUT_PER_SEC=8
       - BACKPRESSURE_MAX_QUEUE_DELAY_MS=750
       - EMBED_BATCH_ENABLED=true
-      - EMBED_BATCH_SIZE=6
+      - EMBED_BATCH_SIZE=8
       - EMBED_BATCH_TIMEOUT_MS=10
       - EMBED_BATCH_MAX_WAIT_GUARD_MS=50
-      - FAISS_ENABLED=${FAISS_ENABLED:-true}
+      - LIVENESS_ENABLED=false
+      - FAISS_ENABLED=false
+      - ONNX_INTRA_OP_THREADS=2
+      - ONNX_INTER_OP_THREADS=1
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
@@ -131,14 +143,29 @@ services:
       - ./models:/app/models
       - prometheus_multiproc:/tmp/prometheus
 
+  api_lb:
+    image: nginx:1.27-alpine
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+    volumes:
+      - ./faceid-core/infrastructure/nginx/api_lb.conf:/etc/nginx/conf.d/default.conf:ro
+
   fast_worker:
     build:
       context: .
       dockerfile: faceid-core/infrastructure/docker/api.Dockerfile
+    cpus: "2.0"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
     environment:
       - ENV=dev
       - APP_ROLE=fast_worker
       - MODELS_DIR=/app/models
+      - WORKER_SEMAPHORE=${WORKER_SEMAPHORE:-2}
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
       - REDIS_URL=redis://redis:6379/0
       - REDIS_HOST=redis
@@ -150,10 +177,13 @@ services:
       - ASYNC_THROUGHPUT_PER_SEC=8
       - BACKPRESSURE_MAX_QUEUE_DELAY_MS=750
       - EMBED_BATCH_ENABLED=true
-      - EMBED_BATCH_SIZE=6
+      - EMBED_BATCH_SIZE=8
       - EMBED_BATCH_TIMEOUT_MS=10
       - EMBED_BATCH_MAX_WAIT_GUARD_MS=50
-      - FAISS_ENABLED=${FAISS_ENABLED:-true}
+      - LIVENESS_ENABLED=false
+      - FAISS_ENABLED=false
+      - ONNX_INTRA_OP_THREADS=2
+      - ONNX_INTER_OP_THREADS=1
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
@@ -163,7 +193,7 @@ services:
       - EMBED_BATCH_ENABLED=false
       - FAST_WORKER_MAX_CONCURRENCY=1
       - LIVENESS_ENABLED=false
-      - ONNX_INTRA_OP_THREADS=4
+      - ONNX_INTRA_OP_THREADS=2
       - ONNX_INTER_OP_THREADS=1
     depends_on:
       postgres:
@@ -185,15 +215,23 @@ services:
     build:
       context: .
       dockerfile: faceid-core/infrastructure/docker/worker.Dockerfile
+    cpus: "2.0"
     deploy:
-      replicas: 3
+      replicas: 4
+      resources:
+        limits:
+          cpus: "2.0"
     environment:
       - ENV=dev
       - MODELS_DIR=/app/models
+      - WORKER_SEMAPHORE=${WORKER_SEMAPHORE:-2}
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
       - REDIS_URL=redis://redis:6379/0
       - REDIS_HOST=redis
       - PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
+      - LIVENESS_ENABLED=false
+      - ONNX_INTRA_OP_THREADS=2
+      - ONNX_INTER_OP_THREADS=1
     command: python -m app.workers.verify_worker
     depends_on:
       - redis
@@ -206,6 +244,11 @@ services:
     build:
       context: .
       dockerfile: faceid-core/infrastructure/docker/worker.Dockerfile
+    cpus: "2.0"
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
     environment:
       - ENV=dev
       - MODELS_DIR=/app/models
@@ -213,6 +256,9 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - REDIS_HOST=redis
       - PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
+      - LIVENESS_ENABLED=false
+      - ONNX_INTRA_OP_THREADS=2
+      - ONNX_INTER_OP_THREADS=1
     command: python -m app.workers.verify_worker
     ports:
       - "9103:9101"
@@ -225,12 +271,14 @@ services:
 
   worker_fast:
     <<: *worker-base
+    cpus: "2.0"
     ports:
       - "9101:9100"
     command: celery -A app.workers.celery_app worker -Q verify_fast --loglevel=info --concurrency=2 --pool=prefork
 
   worker_heavy:
     <<: *worker-base
+    cpus: "2.0"
     ports:
       - "9102:9100"
     command: celery -A app.workers.celery_app worker -Q verify_heavy --loglevel=info --concurrency=4 --pool=prefork

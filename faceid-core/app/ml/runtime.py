@@ -27,8 +27,8 @@ logger = logging.getLogger(__name__)
 
 def _make_session_options() -> ort.SessionOptions:
     so = ort.SessionOptions()
-    so.intra_op_num_threads = 1
-    so.inter_op_num_threads = 1
+    so.intra_op_num_threads = max(1, int(settings.ONNX_INTRA_OP_THREADS))
+    so.inter_op_num_threads = max(1, int(settings.ONNX_INTER_OP_THREADS))
     so.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
     so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
     return so
@@ -88,7 +88,8 @@ def _build_face_app(
         )
 
     ctx_id = 0 if "CUDAExecutionProvider" in providers else -1
-    det_size = (640, 640) if "CUDAExecutionProvider" in providers else (320, 320)
+    det_side = max(1, int(settings.RETINA_DET_SIZE))
+    det_size = (det_side, det_side)
     app.prepare(ctx_id=ctx_id, det_size=det_size)
     return app
 

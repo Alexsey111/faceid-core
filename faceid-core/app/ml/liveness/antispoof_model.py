@@ -10,11 +10,13 @@ import cv2
 import numpy as np
 import onnxruntime as ort
 
+from app.core.config import settings
+
 
 def _make_session_options() -> ort.SessionOptions:
     so = ort.SessionOptions()
-    so.intra_op_num_threads = 1
-    so.inter_op_num_threads = 1
+    so.intra_op_num_threads = max(1, int(settings.ONNX_INTRA_OP_THREADS))
+    so.inter_op_num_threads = max(1, int(settings.ONNX_INTER_OP_THREADS))
     return so
 
 

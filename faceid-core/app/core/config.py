@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     # Models
     # -------------------------
     MODELS_DIR: str = "D:/python projects/faceid-core"
-    ONNX_INTRA_OP_THREADS: int = 4
+    ONNX_INTRA_OP_THREADS: int = 2
     ONNX_INTER_OP_THREADS: int = 1
 
     # -------------------------
@@ -74,6 +74,8 @@ class Settings(BaseSettings):
     # -------------------------
     # Face verification thresholds
     # -------------------------
+    PREPROCESS_MAX_SIDE: int = 640
+    RETINA_DET_SIZE: int = 320
     USE_PIPELINE_V2: bool = True
     USE_SIMPLE_IS_GENUINE: bool = True
     USE_FAST_PATH: bool = True
@@ -83,7 +85,7 @@ class Settings(BaseSettings):
     FAST_WORKER_FAILURES: int = 0
     FAST_WORKER_MAX_FAILURES: int = 3
     FAST_WORKER_MAX_CONCURRENCY: int = 4
-    LIVENESS_ENABLED: bool = True
+    LIVENESS_ENABLED: bool = False
     LIVENESS_THRESHOLD: float = 0.5
     FACE_MATCH_THRESHOLD: float = 0.6
     FACE_LOW_THRESHOLD: float = 0.3
@@ -108,7 +110,8 @@ class Settings(BaseSettings):
     WORKER_COUNT: int = 3
     ACTIVE_TASKS_MULTIPLIER: float = 1.25
     ASYNC_THROUGHPUT_PER_SEC: float = 8.0
-    BACKPRESSURE_MAX_QUEUE_DELAY_MS: float = 750.0
+    BACKPRESSURE_MAX_QUEUE_DELAY_MS: float = 10000.0
+    WORKER_SEMAPHORE: int = 2
     DB_POOL_SIZE: int = 5
     DB_MAX_OVERFLOW: int = 10
     DB_POOL_TIMEOUT: int = 30
