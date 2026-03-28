@@ -26,6 +26,8 @@ Client
 ```text
 workers = 4
 semaphore = 2
+batch_size = 16
+collect_timeout = 10ms
 batching = enabled
 mode = async
 ````
@@ -132,7 +134,7 @@ N nodes → N × 12 jobs/sec
 
 ### 2. Усиление batching
 
-* batch_size → 12 / 16
+* batch_size → 16
 * проверить влияние на latency и CPU
 
 ---
@@ -156,5 +158,3 @@ N nodes → N × 12 jobs/sec
 * данная ветка является baseline
 * все дальнейшие изменения должны сравниваться с ней
 * перед изменениями фиксировать метрики
-
--

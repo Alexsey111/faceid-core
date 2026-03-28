@@ -184,6 +184,8 @@ API:
 Workers:
   replicas = 4
   semaphore = 2
+  batch_size = 16
+  collect_timeout = 10ms
 
 Runtime:
   ONNX intra/inter = 1/1

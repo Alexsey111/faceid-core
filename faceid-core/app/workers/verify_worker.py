@@ -3,6 +3,7 @@
 import base64
 import asyncio
 import json
+import os
 import redis
 import time
 from time import perf_counter
@@ -50,6 +51,8 @@ QUEUE_NAME = "face_verify_queue"
 MAX_QUEUE_WAIT = 5.0
 MAX_JOB_AGE_MS = 3000
 MAX_IMAGE_SIDE = 640
+BATCH_COLLECT_TIMEOUT = float(os.getenv("BATCH_COLLECT_TIMEOUT", "0.01"))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "16"))
 _PIPELINE: Any | None = None
 
 semaphore = asyncio.Semaphore(max(1, int(settings.WORKER_SEMAPHORE)))
@@ -94,16 +97,6 @@ def _update_queue_length_metric() -> None:
         (perf_counter() - start) * 1000.0
     )
     QUEUE_LENGTH.set(queue_length)
-
-
-def _get_batch_size(queue_len: int) -> int:
-    if queue_len < 10:
-        return 4
-    if queue_len < 30:
-        return 6
-    return 8
-
-
 def _build_metrics(created_at: float, started_at: float, finished_at: float) -> dict[str, float]:
     return {
         "created_at": created_at,
@@ -235,14 +228,14 @@ async def warmup():
 
 async def collect_batch() -> list[dict[str, Any]]:
     start = perf_counter()
-    queue_len = cast(int, redis_client.llen(QUEUE_NAME))
+    redis_client.llen(QUEUE_NAME)
     REDIS_COMMAND_LATENCY_MS.labels(command="llen_queue_pre_batch").observe(
         (perf_counter() - start) * 1000.0
     )
     _update_queue_length_metric()
 
     jobs: list[dict[str, Any]] = []
-    batch_size = _get_batch_size(queue_len)
+    batch_size = BATCH_SIZE
 
     first_job: dict[str, Any] | None = None
     while first_job is None:
@@ -268,33 +261,27 @@ async def collect_batch() -> list[dict[str, Any]]:
         first_job = job
         jobs.append(job)
 
-    remaining_to_fetch = batch_size - 1
-    if remaining_to_fetch > 0:
+    batch_start = time.time()
+    while len(jobs) < batch_size:
+        if time.time() - batch_start > BATCH_COLLECT_TIMEOUT:
+            break
+
         start = perf_counter()
-        remaining_len = cast(int, redis_client.llen(QUEUE_NAME))
-        take_count = min(remaining_to_fetch, remaining_len)
-        if take_count > 0:
-            with redis_client.pipeline(transaction=True) as pipe:
-                pipe.lrange(QUEUE_NAME, -take_count, -1)
-                if take_count == remaining_len:
-                    pipe.ltrim(QUEUE_NAME, 1, 0)
-                else:
-                    pipe.ltrim(QUEUE_NAME, 0, remaining_len - take_count - 1)
-                batch_tail, _ = pipe.execute()
+        raw = cast(str | None, redis_client.lpop(QUEUE_NAME))
+        QUEUE_POP_LATENCY_MS.observe((perf_counter() - start) * 1000.0)
+        if raw is None:
+            break
 
-            QUEUE_POP_LATENCY_MS.observe((perf_counter() - start) * 1000.0)
+        job = json.loads(raw)
+        created_at = job.get("created_at", time.time())
+        now = time.time()
+        age_ms = (now - created_at) * 1000.0
 
-            for data in reversed(cast(list[str], batch_tail)):
-                job = json.loads(data)
-                created_at = job.get("created_at", time.time())
-                now = time.time()
-                age_ms = (now - created_at) * 1000.0
+        if age_ms > MAX_JOB_AGE_MS or (now - created_at) > MAX_QUEUE_WAIT:
+            _reject_stale_job(job["job_id"], created_at, now)
+            continue
 
-                if age_ms > MAX_JOB_AGE_MS or (now - created_at) > MAX_QUEUE_WAIT:
-                    _reject_stale_job(job["job_id"], created_at, now)
-                    continue
-
-                jobs.append(job)
+        jobs.append(job)
 
     _update_queue_length_metric()
     return jobs

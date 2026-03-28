@@ -232,6 +232,8 @@ services:
       - LIVENESS_ENABLED=false
       - ONNX_INTRA_OP_THREADS=2
       - ONNX_INTER_OP_THREADS=1
+      - BATCH_SIZE=${BATCH_SIZE:-16}
+      - BATCH_COLLECT_TIMEOUT=${BATCH_COLLECT_TIMEOUT:-0.01}
     command: python -m app.workers.verify_worker
     depends_on:
       - redis
