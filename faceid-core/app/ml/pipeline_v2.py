@@ -18,11 +18,31 @@ from app.ml.liveness.model_paths import resolve_liveness_model_path
 from app.ml.preprocessing.image_preprocessor import ImagePreprocessor
 from app.ml.quality.image_quality_gate import ImageQualityGate
 from app.ml.detection.fast_detector import FastFaceDetector
-from app.ml.detection.retinaface_detector import RetinaFaceDetector
-from app.ml.utils.face_align import align_face
 
 
 logger = logging.getLogger(__name__)
+
+
+def expand_bbox(bbox, scale, image_shape):
+    x1, y1, x2, y2 = bbox
+    h, w = image_shape[:2]
+
+    cx = (x1 + x2) / 2
+    cy = (y1 + y2) / 2
+    bw = (x2 - x1) * scale
+    bh = (y2 - y1) * scale
+
+    nx1 = max(0, int(cx - bw / 2))
+    ny1 = max(0, int(cy - bh / 2))
+    nx2 = min(w, int(cx + bw / 2))
+    ny2 = min(h, int(cy + bh / 2))
+
+    return nx1, ny1, nx2, ny2
+
+
+def crop_image(image, bbox):
+    x1, y1, x2, y2 = bbox
+    return image[y1:y2, x1:x2], (x1, y1)
 
 
 class FacePipelineV2:
@@ -31,12 +51,12 @@ class FacePipelineV2:
 
     1. preprocess
     2. fast detector
-    3. fallback to RetinaFace if fast detector finds nothing
-    4. crop/align
-    5. ONNX ArcFace encode
+    3. crop
+    4. ONNX ArcFace encode
+    5. search / decision
     """
 
-    FAST_CONFIDENCE_THRESHOLD = 0.6
+    FAST_CONFIDENCE_THRESHOLD = 0.75
     FAST_BBOX_EXPAND_SCALE = 0.30
 
     def __init__(self):
@@ -47,7 +67,6 @@ class FacePipelineV2:
         self.quality_gate = ImageQualityGate()
 
         self.fast_detector: Optional[FastFaceDetector] = None
-        self.detector: Optional[RetinaFaceDetector] = None
         self.encoder: BatchEncoder | OnnxArcFaceEncoder | None = None
         self.liveness_checker: Optional[OnnxLivenessChecker] = None
 
@@ -59,7 +78,6 @@ class FacePipelineV2:
                 model_path=str(fast_model),
                 config_path=str(fast_config),
             )
-            self.detector = RetinaFaceDetector()
             self.encoder = get_batch_encoder()
             if settings.LIVENESS_ENABLED:
                 liveness_path = resolve_liveness_model_path(settings.MODELS_DIR)
@@ -82,33 +100,31 @@ class FacePipelineV2:
         fast_faces: list[list[float]],
         timings: Dict[str, float],
     ) -> Dict[str, Any]:
-        detector = self.detector
-        assert detector is not None, "retinaface detector not initialized"
-
         detection: Dict[str, Any] | None = None
         face_input: np.ndarray | None = None
-        bbox_source = "fast"
+        bbox_source: str | None = "fast"
+        bbox_source_detail: str | None = "fast"
 
         if len(fast_faces) == 1:
             x1_f, y1_f, x2_f, y2_f, confidence = fast_faces[0]
+            if confidence < self.FAST_CONFIDENCE_THRESHOLD:
+                raise ValueError("Low confidence face detection")
             x1, y1, x2, y2 = map(int, (x1_f, y1_f, x2_f, y2_f))
 
-            h, w = image.shape[:2]
-            x1, y1, x2, y2 = self._expand_bbox(
-                x1, y1, x2, y2, w, h, self.FAST_BBOX_EXPAND_SCALE
+            x1, y1, x2, y2 = expand_bbox(
+                (x1, y1, x2, y2),
+                self.FAST_BBOX_EXPAND_SCALE,
+                image.shape,
             )
 
-            roi = self._safe_crop(image, x1, y1, x2, y2)
+            roi, _ = crop_image(image, (x1, y1, x2, y2))
 
-            if roi.mean() < 5:
+            if roi.mean() < 20:
                 raise ValueError("bad crop")
 
-            if confidence >= self.FAST_CONFIDENCE_THRESHOLD:
-                face_input = cv2.resize(roi, (112, 112))
-                bbox_source = "fast_only"
-            else:
-                raise ValueError("Face not detected")
-
+            bbox_source = "fast"
+            bbox_source_detail = "fast"
+            face_input = cv2.resize(roi, (112, 112))
             detection = {
                 "bbox": [x1, y1, x2, y2],
                 "landmarks": None,
@@ -116,25 +132,7 @@ class FacePipelineV2:
             }
 
         elif len(fast_faces) == 0:
-            t0 = time.time()
-            detections = detector.detect(image)
-            timings["fallback_detect_ms"] = (time.time() - t0) * 1000
-
-            if not detections:
-                raise ValueError("Face not detected")
-
-            if len(detections) > 1:
-                raise ValueError("Multiple faces not allowed")
-
-            detection = detections[0]
-            bbox_source = "retinaface"
-
-            x1, y1, x2, y2 = map(int, detection["bbox"])
-
-            if detection.get("landmarks") is not None:
-                face_input = align_face(image, detection["landmarks"])
-            else:
-                face_input = self._safe_crop(image, x1, y1, x2, y2)
+            raise ValueError("Face not detected")
 
         else:
             raise ValueError("Multiple faces not allowed")
@@ -161,6 +159,7 @@ class FacePipelineV2:
                 "bbox": detection["bbox"],
                 "landmarks": detection.get("landmarks"),
                 "bbox_source": bbox_source,
+                "bbox_source_detail": bbox_source_detail,
                 "timings": timings,
             }
 
@@ -193,6 +192,7 @@ class FacePipelineV2:
                         "bbox": detection["bbox"],
                         "landmarks": detection.get("landmarks"),
                         "bbox_source": bbox_source,
+                        "bbox_source_detail": bbox_source_detail,
                         "timings": timings,
                     }
 
@@ -201,26 +201,27 @@ class FacePipelineV2:
                 liveness_passed = None
                 liveness_score = None
 
-        return {
+        result = {
             "status": "ok",
             "face_input": face_input,
             "bbox": detection["bbox"],
             "landmarks": detection.get("landmarks"),
             "liveness_passed": liveness_passed,
             "liveness_score": liveness_score,
-            "bbox_source": bbox_source,
+            "bbox_source_detail": bbox_source_detail,
             "quality_details": {
                 **image_quality.details,
                 **face_quality.details,
             },
             "timings": timings,
         }
+        result["bbox_source"] = bbox_source
+        return result
 
     def prepare_face_input(self, image_bytes: bytes) -> Dict[str, Any]:
         self._init()
 
         assert self.fast_detector is not None, "fast_detector not initialized"
-        assert self.detector is not None, "retinaface detector not initialized"
         assert self.encoder is not None, "encoder not initialized"
 
         timings: Dict[str, float] = {}
@@ -252,7 +253,6 @@ class FacePipelineV2:
         self._init()
 
         assert self.fast_detector is not None, "fast_detector not initialized"
-        assert self.detector is not None, "retinaface detector not initialized"
         assert self.encoder is not None, "encoder not initialized"
 
         timings: Dict[str, float] = {}
@@ -436,36 +436,3 @@ class FacePipelineV2:
                 return model_path, config_path
 
         raise FileNotFoundError("Fast detector files not found")
-
-    def _expand_bbox(
-        self,
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
-        image_width: int,
-        image_height: int,
-        scale: float,
-    ) -> tuple[int, int, int, int]:
-        bw = x2 - x1
-        bh = y2 - y1
-
-        x1 = max(0, int(x1 - bw * scale))
-        y1 = max(0, int(y1 - bh * scale))
-        x2 = min(image_width, int(x2 + bw * scale))
-        y2 = min(image_height, int(y2 + bh * scale))
-
-        return x1, y1, x2, y2
-
-    def _safe_crop(
-        self,
-        image: np.ndarray,
-        x1: int,
-        y1: int,
-        x2: int,
-        y2: int,
-    ) -> np.ndarray:
-        crop = image[max(0, y1):max(0, y2), max(0, x1):max(0, x2)]
-        if crop.size == 0:
-            raise ValueError("Empty face crop")
-        return crop

@@ -74,8 +74,9 @@ class Settings(BaseSettings):
     # -------------------------
     # Face verification thresholds
     # -------------------------
-    PREPROCESS_MAX_SIDE: int = 640
-    RETINA_DET_SIZE: int = 320
+    PREPROCESS_MAX_SIDE: int = 480
+    RETINA_DET_SIZE: int = 512
+    RETINA_DET_SIZE_SMALL: int = 320
     USE_PIPELINE_V2: bool = True
     USE_SIMPLE_IS_GENUINE: bool = True
     USE_FAST_PATH: bool = True
@@ -109,7 +110,7 @@ class Settings(BaseSettings):
     CELERY_TASK_QUEUE: str = "faceid"
     WORKER_COUNT: int = 3
     ACTIVE_TASKS_MULTIPLIER: float = 1.25
-    ASYNC_THROUGHPUT_PER_SEC: float = 8.0
+    ASYNC_THROUGHPUT_PER_SEC: float = 16.0
     BACKPRESSURE_MAX_QUEUE_DELAY_MS: float = 10000.0
     WORKER_SEMAPHORE: int = 2
     DB_POOL_SIZE: int = 5

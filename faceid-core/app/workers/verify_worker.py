@@ -3,6 +3,7 @@
 import base64
 import asyncio
 import json
+import logging
 import os
 import redis
 import time
@@ -15,6 +16,7 @@ import numpy as np
 from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.db.repositories.verification_repo import VerificationRepository
 from app.core.config import settings
+from app.core.logging import setup_logging
 from app.db.session import AsyncSessionLocal
 from app.monitoring.metrics import (
     ASYNC_JOB_COMPLETED_TOTAL,
@@ -38,21 +40,25 @@ from app.services.verify_job_queue import VerifyJobQueue
 from app.services.verify_result_store import VerifyResultStore
 from app.services.verification_service import VerificationService
 
+logger = logging.getLogger(__name__)
+
 REDIS_POOL = redis.ConnectionPool(
     host="redis",
     port=6379,
     db=0,
     decode_responses=True,
     max_connections=50,
+    retry_on_timeout=True,
+    socket_keepalive=True,
 )
 
 redis_client = redis.Redis(connection_pool=REDIS_POOL)
 QUEUE_NAME = "face_verify_queue"
 MAX_QUEUE_WAIT = 5.0
 MAX_JOB_AGE_MS = 3000
-MAX_IMAGE_SIDE = 640
-BATCH_COLLECT_TIMEOUT = float(os.getenv("BATCH_COLLECT_TIMEOUT", "0.01"))
-BATCH_SIZE = int(os.getenv("BATCH_SIZE", "16"))
+MAX_IMAGE_SIDE = 480
+BATCH_COLLECT_TIMEOUT = float(os.getenv("BATCH_COLLECT_TIMEOUT", "0.05"))
+BATCH_SIZE = int(os.getenv("BATCH_SIZE", "8"))
 _PIPELINE: Any | None = None
 
 semaphore = asyncio.Semaphore(max(1, int(settings.WORKER_SEMAPHORE)))
@@ -362,23 +368,44 @@ async def process_batch(job_datas: list[dict[str, Any]]):
 
     if batch_candidates:
         t0 = time.time()
-        decoded_images = [item.get("image") for item in batch_candidates]
-        if all(image is not None for image in decoded_images):
-            prepared_results = pipeline.prepare_face_inputs_from_images(
-                [cast(np.ndarray, image) for image in decoded_images]
+        try:
+            decoded_images = [item.get("image") for item in batch_candidates]
+            if all(image is not None for image in decoded_images):
+                prepared_results = pipeline.prepare_face_inputs_from_images(
+                    [cast(np.ndarray, image) for image in decoded_images]
+                )
+            else:
+                image_bytes_list = [item["image_bytes"] for item in batch_candidates]
+                prepared_results = pipeline.prepare_face_inputs(image_bytes_list)
+            prep_ms = (time.time() - t0) * 1000.0
+            logger.info(
+                "[PREP_BATCH] size=%s prep_ms=%.2f",
+                len(batch_candidates),
+                prep_ms,
             )
-        else:
-            image_bytes_list = [item["image_bytes"] for item in batch_candidates]
-            prepared_results = pipeline.prepare_face_inputs(image_bytes_list)
-        prep_ms = (time.time() - t0) * 1000.0
-        print(f"[PREP_BATCH] size={len(batch_candidates)} prep_ms={prep_ms:.2f}")
 
-        if len(prepared_results) != len(batch_candidates):
-            raise RuntimeError("Pipeline returned unexpected batch size")
+            if len(prepared_results) != len(batch_candidates):
+                raise RuntimeError("Pipeline returned unexpected batch size")
 
-        for item, prepared in zip(batch_candidates, prepared_results):
-            item["prepared"] = prepared
-            prepared_jobs.append(item)
+            for item, prepared in zip(batch_candidates, prepared_results):
+                item["prepared"] = prepared
+                prepared_jobs.append(item)
+        except Exception as exc:
+            finished_at = time.time()
+            for item in batch_candidates:
+                job_id = item["job_id"]
+                created_at = item["created_at"]
+                job_started_at = item["job_started_at"]
+                metrics = _build_metrics(created_at, job_started_at, finished_at)
+                _observe_async_job_metrics(metrics, completed=True)
+                JOB_AGE_MS.observe((finished_at - created_at) * 1000.0)
+                _print_metrics(job_id, metrics)
+                VerifyResultStore.set_error(job_id, str(exc), metrics)
+                inflight_decrements += 1
+            if inflight_decrements:
+                _decr_inflight(inflight_decrements)
+                _update_inflight_metrics()
+            return
 
     terminal_jobs: list[dict[str, Any]] = []
     ok_jobs = []
@@ -417,6 +444,7 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     "error_code": prepared.get("quality_reason") or "quality_reject",
                     "bbox": prepared.get("bbox"),
                     "bbox_source": prepared.get("bbox_source"),
+                    "bbox_source_detail": prepared.get("bbox_source_detail"),
                 },
                 metrics,
             )
@@ -431,6 +459,7 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     "error_code": "spoof_detected",
                     "bbox": prepared.get("bbox"),
                     "bbox_source": prepared.get("bbox_source"),
+                    "bbox_source_detail": prepared.get("bbox_source_detail"),
                 },
                 metrics,
             )
@@ -445,6 +474,8 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     "liveness_passed": False,
                     "replay_detected": False,
                     "error_code": error_code,
+                    "bbox_source": prepared.get("bbox_source"),
+                    "bbox_source_detail": prepared.get("bbox_source_detail"),
                 },
                 metrics,
             )
@@ -458,13 +489,39 @@ async def process_batch(job_datas: list[dict[str, Any]]):
             async with semaphore:
                 embeddings = pipeline.encoder.encode_batch(face_inputs)
             batch_encode_ms = (time.time() - t0) * 1000.0
-            print(f"[BATCH] size={len(ok_jobs)} encode_batch_ms={batch_encode_ms:.2f}")
+            logger.info(
+                "[BATCH] size=%s encode_batch_ms=%.2f",
+                len(ok_jobs),
+                batch_encode_ms,
+            )
 
             if len(embeddings) != len(ok_jobs):
                 raise RuntimeError("Batch encoder returned unexpected batch size")
 
             for item, embedding in zip(ok_jobs, embeddings):
                 item["prepared"]["embedding"] = embedding
+
+            estimated_encode_ms = batch_encode_ms / max(1, len(ok_jobs))
+            for item in ok_jobs:
+                job_id = item["job_id"]
+                prepared = item["prepared"]
+                prepared_timings = prepared.get("timings", {})
+                if prepared_timings:
+                    print(
+                        "[PIPELINE] "
+                        f"job={job_id} "
+                        f"pre={prepared_timings.get('preprocess_ms', 0):.2f} "
+                        f"qpre={prepared_timings.get('quality_gate_pre_ms', 0):.2f} "
+                        f"fast={prepared_timings.get('fast_detect_ms', 0):.2f} "
+                        f"qface={prepared_timings.get('quality_gate_face_ms', 0):.2f} "
+                        f"live={prepared_timings.get('liveness_ms', 0):.2f}"
+                    , flush=True)
+
+                print(
+                    "[ENCODE] "
+                    f"job={job_id} "
+                    f"encode_ms={prepared_timings.get('encode_ms', estimated_encode_ms):.2f}"
+                , flush=True)
 
             t0 = time.time()
             async with AsyncSessionLocal() as db:
@@ -478,6 +535,12 @@ async def process_batch(job_datas: list[dict[str, Any]]):
 
             for item, top_k in zip(ok_jobs, batch_top_k):
                 item["top_k"] = top_k
+
+            logger.info(
+                "[BATCH] size=%s ready=%s",
+                len(prepared_jobs),
+                len(ok_jobs),
+            )
     except Exception as exc:
         finished_at = time.time()
         for item in ok_jobs:
@@ -542,12 +605,24 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     t_start=batch_started_at,
                     top_k=item.get("top_k"),
                 )
+                result["bbox_source"] = prepared.get("bbox_source")
+                result["bbox_source_detail"] = prepared.get("bbox_source_detail")
 
                 finished_at = time.time()
                 metrics = _build_metrics(created_at, job_started_at, finished_at)
                 _observe_async_job_metrics(metrics, completed=True)
                 JOB_AGE_MS.observe((finished_at - created_at) * 1000.0)
                 _print_metrics(job_id, metrics)
+                prepared_timings = prepared.get("timings", {})
+                print(
+                    "[PIPELINE] "
+                    f"job={job_id} "
+                    f"pre={prepared_timings.get('preprocess_ms', 0):.2f} "
+                    f"qpre={prepared_timings.get('quality_gate_pre_ms', 0):.2f} "
+                    f"fast={prepared_timings.get('fast_detect_ms', 0):.2f} "
+                    f"qface={prepared_timings.get('quality_gate_face_ms', 0):.2f} "
+                    f"live={prepared_timings.get('liveness_ms', 0):.2f}"
+                )
                 VerifyResultStore.set_done(job_id, result, metrics)
             except Exception as exc:
                 finished_at = time.time()
@@ -573,4 +648,5 @@ async def run_worker():
 
 
 if __name__ == "__main__":
+    setup_logging()
     asyncio.run(run_worker())

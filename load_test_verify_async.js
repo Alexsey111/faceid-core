@@ -17,10 +17,25 @@ export const options = {
 
 const BASE_URL = __ENV.BASE_URL || "http://localhost:8000";
 const IMAGE_FILE = __ENV.IMAGE_FILE || "./tests/data_extended/person_011/1.jpg";
-const IMAGE_BASE64 = encoding.b64encode(open(IMAGE_FILE, "b"));
+const NORMAL_IMAGE_FILES = ((__ENV.NORMAL_IMAGE_FILES || IMAGE_FILE) + "")
+  .split(",")
+  .map((item) => item.trim())
+  .filter(Boolean);
+const HARD_IMAGE_FILES = ((__ENV.HARD_IMAGE_FILES || __ENV.HARD_IMAGE_FILE || "") + "")
+  .split(",")
+  .map((item) => item.trim())
+  .filter(Boolean);
+const HARD_RATIO = Number(__ENV.HARD_RATIO || 0.3);
 
-if (!IMAGE_BASE64) {
-  throw new Error("IMAGE_FILE is required");
+function loadImageBase64(path) {
+  return encoding.b64encode(open(path, "b"));
+}
+
+const NORMAL_IMAGE_BASE64S = NORMAL_IMAGE_FILES.map(loadImageBase64);
+const HARD_IMAGE_BASE64S = HARD_IMAGE_FILES.map(loadImageBase64);
+
+if (!NORMAL_IMAGE_BASE64S.length) {
+  throw new Error("NORMAL_IMAGE_FILES or IMAGE_FILE is required");
 }
 
 const e2eLatency = new Trend("e2e_latency_ms");
@@ -40,6 +55,8 @@ const resultPasses = new Counter("result_passes");
 const resultFails = new Counter("result_fails");
 const terminalExpired = new Counter("terminal_expired");
 const waitTimeouts = new Counter("wait_timeouts");
+const fastOnlyJobs = new Counter("fast_only_jobs");
+const retinafaceJobs = new Counter("retinaface_jobs");
 
 const ITERATION_PAUSE = Number(__ENV.PAUSE || 0.5);
 const MAX_POLLS = Number(__ENV.MAX_POLLS || 3);
@@ -102,11 +119,31 @@ function trendStats(data, key) {
   };
 }
 
+function bboxSource(data) {
+  const resultObj = data?.result ?? data ?? {};
+  return resultObj?.bbox_source ?? null;
+}
+
+function bboxSourceDetail(data) {
+  const resultObj = data?.result ?? data ?? {};
+  return resultObj?.bbox_source_detail ?? null;
+}
+
+function pickImageBase64() {
+  if (HARD_IMAGE_BASE64S.length > 0 && HARD_RATIO > 0 && Math.random() < HARD_RATIO) {
+    return HARD_IMAGE_BASE64S[Math.floor(Math.random() * HARD_IMAGE_BASE64S.length)];
+  }
+
+  return NORMAL_IMAGE_BASE64S[Math.floor(Math.random() * NORMAL_IMAGE_BASE64S.length)];
+}
+
 export default function () {
+  const imageBase64 = pickImageBase64();
+
   const enqueueRes = http.post(
     `${BASE_URL}/verify_async`,
     JSON.stringify({
-      image_b64: IMAGE_BASE64,
+      image_b64: imageBase64,
       user_id: "1",
       require_liveness: false,
     }),
@@ -179,6 +216,16 @@ export default function () {
     }
 
     if (data && isTerminalStatus(data.status)) {
+      const resultObj = data.result ?? data;
+      const source = resultObj?.bbox_source ?? null;
+      const sourceDetail = resultObj?.bbox_source_detail ?? null;
+
+      if (source === "fast") {
+        fastOnlyJobs.add(1);
+      } else if (source && source.includes("fallback")) {
+        retinafaceJobs.add(1);
+      }
+
       const queueDelayValue = asMsTopLevelOrNested(
         data,
         "async_job_queue_delay_ms",
@@ -244,6 +291,9 @@ export function handleSummary(data) {
       max_polls: MAX_POLLS,
       pause: ITERATION_PAUSE,
       image_file: IMAGE_FILE,
+      normal_image_files: NORMAL_IMAGE_FILES,
+      hard_image_files: HARD_IMAGE_FILES,
+      hard_ratio: HARD_RATIO,
     },
     counters: {
       total_requests: counterValue(data, "total_requests", 0),
@@ -254,6 +304,8 @@ export function handleSummary(data) {
       result_fails: counterValue(data, "result_fails", 0),
       terminal_expired: counterValue(data, "terminal_expired", 0),
       wait_timeouts: counterValue(data, "wait_timeouts", 0),
+      fast_only_jobs: counterValue(data, "fast_only_jobs", 0),
+      retinaface_jobs: counterValue(data, "retinaface_jobs", 0),
     },
     rates: {
       reject_rate: rateValue(data, "reject_rate", 0),
@@ -279,6 +331,8 @@ export function handleSummary(data) {
     `reject_rate=${summary.rates.reject_rate}`,
     `http_req_failed=${summary.rates.http_req_failed}`,
     `responses_429=${summary.counters.responses_429}`,
+    `fast_only_jobs=${summary.counters.fast_only_jobs}`,
+    `retinaface_jobs=${summary.counters.retinaface_jobs}`,
     `completed_eventually=${summary.rates.completed_eventually}`,
     `queue_delay_p95_ms=${summary.trends.queue_delay_ms?.p95}`,
     `processing_time_p95_ms=${summary.trends.processing_time_ms?.p95}`,
