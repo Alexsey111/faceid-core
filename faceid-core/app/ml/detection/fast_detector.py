@@ -18,7 +18,7 @@ class FastFaceDetector:
         for i in range(detections.shape[2]):
             confidence = detections[0, 0, i, 2]
 
-            if confidence < 0.6:
+            if confidence < 0.3:
                 continue
 
             box = detections[0, 0, i, 3:7] * np.array([width, height, width, height])

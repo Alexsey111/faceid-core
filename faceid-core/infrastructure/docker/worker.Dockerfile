@@ -17,5 +17,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY faceid-core/app ./app
+COPY models ./models
 
 CMD ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info", "--concurrency=6", "--prefetch-multiplier=1"]

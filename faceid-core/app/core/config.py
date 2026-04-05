@@ -110,7 +110,7 @@ class Settings(BaseSettings):
     CELERY_TASK_QUEUE: str = "faceid"
     WORKER_COUNT: int = 3
     ACTIVE_TASKS_MULTIPLIER: float = 1.25
-    ASYNC_THROUGHPUT_PER_SEC: float = 16.0
+    ASYNC_THROUGHPUT_PER_SEC: float = 1000.0
     BACKPRESSURE_MAX_QUEUE_DELAY_MS: float = 10000.0
     WORKER_SEMAPHORE: int = 2
     DB_POOL_SIZE: int = 5

@@ -20,7 +20,7 @@ x-worker-base: &worker-base
     - CELERYD_PREFETCH_MULTIPLIER=1
     - WORKER_COUNT=8
     - WORKER_SEMAPHORE=${WORKER_SEMAPHORE:-2}
-    - ASYNC_THROUGHPUT_PER_SEC=16
+    - ASYNC_THROUGHPUT_PER_SEC=1000
     - BACKPRESSURE_MAX_QUEUE_DELAY_MS=750
     - EMBED_BATCH_ENABLED=true
     - EMBED_BATCH_SIZE=8
@@ -51,7 +51,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: faceid
     ports:
-      - "5432:5432"
+      - "15432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -68,7 +68,7 @@ services:
       POSTGRES_DB: postgres
       POSTGRES_HOST_AUTH_METHOD: trust
     ports:
-      - "5433:5432"
+      - "15433:5432"
     volumes:
       - postgres_test_data:/var/lib/postgresql/data
     healthcheck:
@@ -79,6 +79,7 @@ services:
 
   redis:
     image: redis:7
+    command: redis-server --bind 0.0.0.0
     restart: always
     ports:
       - "6379:6379"
@@ -114,7 +115,7 @@ services:
       - CELERYD_PREFETCH_MULTIPLIER=1
       - WORKER_COUNT=8
       - WORKER_SEMAPHORE=${WORKER_SEMAPHORE:-2}
-      - ASYNC_THROUGHPUT_PER_SEC=16
+      - ASYNC_THROUGHPUT_PER_SEC=1000
       - BACKPRESSURE_MAX_QUEUE_DELAY_MS=750
       - EMBED_BATCH_ENABLED=true
       - EMBED_BATCH_SIZE=8
@@ -173,7 +174,7 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - CELERYD_PREFETCH_MULTIPLIER=1
       - WORKER_COUNT=8
-      - ASYNC_THROUGHPUT_PER_SEC=16
+      - ASYNC_THROUGHPUT_PER_SEC=1000
       - BACKPRESSURE_MAX_QUEUE_DELAY_MS=750
       - EMBED_BATCH_ENABLED=true
       - EMBED_BATCH_SIZE=8
@@ -222,7 +223,7 @@ services:
     environment:
       - ENV=dev
       - MODELS_DIR=/app/models
-      - WORKER_SEMAPHORE=1
+      - WORKER_SEMAPHORE=2
       - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/faceid}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - REDIS_HOST=${REDIS_HOST:-redis}
@@ -231,7 +232,7 @@ services:
       - ONNX_INTRA_OP_THREADS=2
       - ONNX_INTER_OP_THREADS=1
       - BATCH_SIZE=8
-      - BATCH_COLLECT_TIMEOUT=0.04
+      - BATCH_COLLECT_TIMEOUT=0.008
     command: python -m app.workers.verify_worker
     depends_on:
       - redis

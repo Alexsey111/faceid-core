@@ -20,6 +20,7 @@ def setup_logging():
             "message=%(message)s"
         ),
         stream=sys.stdout,
+        force=True,
     )
     root_logger = logging.getLogger()
     job_id_filter = JobIdFilter()

@@ -23,9 +23,9 @@ from app.monitoring.metrics import (
 from app.services.faiss_index import FaissIndex
 
 REDIS_POOL = redis.ConnectionPool(
-    host=getattr(settings, "REDIS_HOST", "localhost"),
-    port=getattr(settings, "REDIS_PORT", 6379),
-    db=getattr(settings, "REDIS_DB", 0),
+    host=settings.REDIS_HOST,
+    port=settings.REDIS_PORT,
+    db=settings.REDIS_DB,
     decode_responses=True,
     max_connections=50,
 )

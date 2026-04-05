@@ -1,9 +1,8 @@
-import time
 import uuid
 from fastapi import Request
 
 
-def _resolve_endpoint(request: Request) -> str:
+def resolve_endpoint(request: Request) -> str:
     route = request.scope.get("route")
     path = getattr(route, "path", None)
     return path or request.url.path

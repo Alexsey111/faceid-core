@@ -21,6 +21,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Копирование кода приложения
 COPY faceid-core/app ./app
+COPY models ./models
 
 # Переменные окружения
 ENV PYTHONUNBUFFERED=1

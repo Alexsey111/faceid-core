@@ -1,0 +1,45 @@
+x-worker-base: &worker-base
+  build:
+    context: .
+    dockerfile: faceid-core/infrastructure/docker/worker.Dockerfile
+  deploy:
+    resources:
+      limits:
+        cpus: "2.0"
+  environment:
+    - ENV=dev
+    - MODELS_DIR=/app/models
+    - POSTGRES_HOST=${POSTGRES_HOST:?set POSTGRES_HOST to node1 address}
+    - POSTGRES_PORT=${POSTGRES_PORT:-5432}
+    - POSTGRES_DB=${POSTGRES_DB:-faceid}
+    - POSTGRES_USER=${POSTGRES_USER:-postgres}
+    - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres}
+    - REDIS_HOST=${REDIS_HOST:?set REDIS_HOST to node1 address}
+    - REDIS_PORT=${REDIS_PORT:-6379}
+    - REDIS_DB=${REDIS_DB:-0}
+    - PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
+    - WORKER_SEMAPHORE=${WORKER_SEMAPHORE:-2}
+    - LIVENESS_ENABLED=false
+    - ONNX_INTRA_OP_THREADS=2
+    - ONNX_INTER_OP_THREADS=1
+    - BATCH_SIZE=8
+    - BATCH_COLLECT_TIMEOUT=0.008
+    - MINIO_ENDPOINT=${MINIO_ENDPOINT:?set MINIO_ENDPOINT to node1 address:9000}
+    - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+    - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+  volumes:
+    - prometheus_multiproc:/tmp/prometheus
+
+services:
+  worker:
+    <<: *worker-base
+    cpus: "2.0"
+    deploy:
+      replicas: 4
+      resources:
+        limits:
+          cpus: "2.0"
+    command: python -m app.workers.verify_worker
+
+volumes:
+  prometheus_multiproc:

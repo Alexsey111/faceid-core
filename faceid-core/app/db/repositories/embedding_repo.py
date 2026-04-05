@@ -1,7 +1,7 @@
 # embedding_repo.py - Репозиторий эмбеддингов
 
 import logging
-from typing import Optional, Sequence
+from typing import Any, Optional, Sequence
 
 import numpy as np
 from sqlalchemy import select, text
@@ -172,7 +172,9 @@ class EmbeddingRepository:
             ORDER BY q.idx, r.similarity DESC
         """)
 
-        params = {f"embedding_{idx}": value for idx, value in enumerate(normalized_embeddings)}
+        params: dict[str, Any] = {
+            f"embedding_{idx}": value for idx, value in enumerate(normalized_embeddings)
+        }
         params["k"] = k
 
         with SEARCH_LATENCY.time():

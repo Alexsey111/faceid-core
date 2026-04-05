@@ -3,7 +3,7 @@
 from typing import Dict, Any, List, Optional
 import numpy as np
 
-from app.ml.runtime import get_face_app
+from app.ml.runtime import get_face_app_for_size
 
 
 class RetinaFaceDetector:
@@ -11,33 +11,41 @@ class RetinaFaceDetector:
     Face detection module using InsightFace.
     """
 
-    def __init__(self):
-
-        self.app = get_face_app()
+    def __init__(self, det_size: int):
+        self.app = get_face_app_for_size(int(det_size))
+        self.det_model = self.app.det_model
 
     def detect(self, image: np.ndarray) -> Optional[List[Dict[str, Any]]]:
         """
-        Detect faces in image.
+        Detect faces in image using a single SCRFD detector.
 
         Returns:
             List of {
                 bbox: [x1, y1, x2, y2],
                 landmarks: [[x,y]...],
-                embedding: np.ndarray
             }
         """
+        bboxes, kpss = self.det_model.detect(
+            image,
+            max_num=0,
+            metric="default",
+        )
 
-        faces = self.app.get(image)
-
-        if not faces:
+        if bboxes is None or bboxes.shape[0] == 0:
             return None
 
-        # Convert Face objects to dicts
-        return [
-            {
-                "bbox": face.bbox.astype(float).tolist(),
-                "landmarks": face.kps.tolist(),
-                "embedding": face.embedding
-            }
-            for face in faces
-        ]
+        faces: list[dict[str, Any]] = []
+        for idx in range(bboxes.shape[0]):
+            bbox = bboxes[idx, 0:4].astype(float).tolist()
+            landmarks = None
+            if kpss is not None:
+                landmarks = kpss[idx].astype(float).tolist()
+
+            faces.append(
+                {
+                    "bbox": bbox,
+                    "landmarks": landmarks,
+                }
+            )
+
+        return faces

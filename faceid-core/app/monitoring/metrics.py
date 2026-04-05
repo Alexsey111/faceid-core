@@ -243,3 +243,138 @@ QUEUE_LENGTH = Gauge(
     "faceid_queue_jobs_pending",
     "Current verification queue length",
 )
+
+VERIFY_ASYNC_STATUS_TOTAL = Counter(
+    "faceid_verify_async_status_total",
+    "HTTP status codes for POST /verify_async",
+    ["status"],
+)
+
+VERIFY_ASYNC_ACCEPTED_TOTAL = Counter(
+    "faceid_verify_async_accepted_total",
+    "Accepted POST /verify_async requests that were queued",
+)
+
+VERIFY_ASYNC_REJECTED_TOTAL = Counter(
+    "faceid_verify_async_rejected_total",
+    "Rejected POST /verify_async requests before queueing",
+    ["reason"],
+)
+
+VERIFY_ASYNC_HTTP_INFLIGHT = Gauge(
+    "faceid_verify_async_http_inflight",
+    "Current in-flight POST /verify_async requests",
+)
+
+VERIFY_ASYNC_REQUEST_SIZE_BYTES = Histogram(
+    "faceid_verify_async_request_size_bytes",
+    "HTTP body size for POST /verify_async",
+    buckets=[
+        10_000,
+        50_000,
+        100_000,
+        250_000,
+        500_000,
+        1_000_000,
+        2_000_000,
+        5_000_000,
+        10_000_000,
+    ],
+)
+
+VERIFY_ASYNC_IMAGE_B64_CHARS = Histogram(
+    "faceid_verify_async_image_b64_chars",
+    "Length of image_b64 string in POST /verify_async",
+    buckets=[
+        10_000,
+        50_000,
+        100_000,
+        250_000,
+        500_000,
+        1_000_000,
+        2_000_000,
+        5_000_000,
+        10_000_000,
+    ],
+)
+
+VERIFY_ASYNC_IMAGE_BYTES = Histogram(
+    "faceid_verify_async_image_bytes",
+    "Decoded image byte size in POST /verify_async",
+    buckets=[
+        10_000,
+        50_000,
+        100_000,
+        250_000,
+        500_000,
+        1_000_000,
+        2_000_000,
+        5_000_000,
+        10_000_000,
+    ],
+)
+
+VERIFY_ASYNC_ADMISSION_MS = Histogram(
+    "faceid_verify_async_admission_ms",
+    "Full admission latency for POST /verify_async measured in middleware",
+    buckets=[1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000],
+)
+
+VERIFY_ASYNC_ROUTE_MS = Histogram(
+    "faceid_verify_async_route_ms",
+    "Time spent inside verify_async route body",
+    buckets=[1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 30000],
+)
+
+VERIFY_ASYNC_BASE64_DECODE_MS = Histogram(
+    "faceid_verify_async_base64_decode_ms",
+    "Base64 decode time inside verify_async",
+    buckets=[0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000],
+)
+
+VERIFY_ASYNC_IMAGE_DECODE_MS = Histogram(
+    "faceid_verify_async_image_decode_ms",
+    "OpenCV image decode time inside verify_async",
+    buckets=[0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000],
+)
+
+VERIFY_ASYNC_PRECHECK_MS = Histogram(
+    "faceid_verify_async_precheck_ms",
+    "Light synchronous image prechecks inside verify_async",
+    buckets=[0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000],
+)
+
+VERIFY_ASYNC_ENQUEUE_MS = Histogram(
+    "faceid_verify_async_enqueue_ms",
+    "Queue enqueue time inside verify_async",
+    buckets=[0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000],
+)
+
+VERIFY_ASYNC_RESPONSE_BUILD_MS = Histogram(
+    "faceid_verify_async_response_build_ms",
+    "Response build time inside verify_async",
+    buckets=[0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200],
+)
+
+VERIFY_ASYNC_BODY_READ_MS = Histogram(
+    "faceid_verify_async_body_read_ms",
+    "Time to read raw request body inside verify_async",
+    buckets=[0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000],
+)
+
+VERIFY_ASYNC_JSON_PARSE_MS = Histogram(
+    "faceid_verify_async_json_parse_ms",
+    "Time to parse JSON body inside verify_async",
+    buckets=[0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000],
+)
+
+VERIFY_ASYNC_MODEL_VALIDATE_MS = Histogram(
+    "faceid_verify_async_model_validate_ms",
+    "Time to validate parsed payload into VerifyAsyncRequest",
+    buckets=[0.1, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000],
+)
+
+VERIFY_ASYNC_MIDDLEWARE_HITS_TOTAL = Counter(
+    "faceid_verify_async_middleware_hits_total",
+    "How many times verify_async branch in metrics middleware was triggered",
+)

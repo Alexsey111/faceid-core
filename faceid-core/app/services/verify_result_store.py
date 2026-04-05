@@ -6,12 +6,13 @@ import redis
 from time import perf_counter
 from typing import Any, Dict, Optional, cast
 
+from app.core.config import settings
 from app.monitoring.metrics import REDIS_COMMAND_LATENCY_MS
 
 REDIS_POOL = redis.ConnectionPool(
-    host="redis",
-    port=6379,
-    db=0,
+    host=settings.REDIS_HOST,
+    port=settings.REDIS_PORT,
+    db=settings.REDIS_DB,
     decode_responses=True,
     max_connections=50,
 )

@@ -7,6 +7,7 @@ import redis
 from typing import Any, Dict, cast
 from time import perf_counter
 
+from app.core.config import settings
 from app.monitoring.metrics import (
     VERIFY_ACCEPTED_JOBS,
     VERIFY_INFLIGHT_CURRENT,
@@ -17,9 +18,9 @@ from app.monitoring.metrics import (
 )
 
 REDIS_POOL = redis.ConnectionPool(
-    host="redis",
-    port=6379,
-    db=0,
+    host=settings.REDIS_HOST,
+    port=settings.REDIS_PORT,
+    db=settings.REDIS_DB,
     decode_responses=True,
     max_connections=50,
 )
@@ -29,8 +30,8 @@ redis_client = redis.Redis(connection_pool=REDIS_POOL)
 
 class VerifyJobQueue:
     QUEUE_NAME = "face_verify_queue"
-    INFLIGHT_LIMIT = 20
-    MAX_QUEUE_SIZE = 100
+    INFLIGHT_LIMIT = 30
+    MAX_QUEUE_SIZE = 250
 
     @staticmethod
     def _get_inflight() -> int:

@@ -28,6 +28,7 @@ from app.models.embedding import Embedding  # noqa: F401
 from app.models.verification_log import VerificationLog  # noqa: F401
 from app.models.verification_job import VerificationJob  # noqa: F401
 from app.core.middleware import request_id_middleware
+from app.monitoring.http_metrics import metrics_middleware
 from app.schemas.verify import VerifyRequest
 
 setup_logging()
@@ -141,6 +142,7 @@ def create_app() -> FastAPI:
     )
 
     app.middleware("http")(request_id_middleware)
+    app.middleware("http")(metrics_middleware)
     app.include_router(router)
     app.include_router(health_router)
 

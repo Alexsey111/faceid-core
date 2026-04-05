@@ -60,49 +60,58 @@ def _build_face_app(
     root_dir: Path,
     providers: list[str],
     sess_options: ort.SessionOptions,
+    det_size: int | None = None,
 ) -> FaceAnalysis:
     try:
         app = FaceAnalysis(
             name="buffalo_l",
             root=str(root_dir),
+            allowed_modules=["detection"],
             providers=providers,
             sess_options=sess_options,
-            det_name="scrfd_10g",
         )
     except TypeError:
         try:
             app = FaceAnalysis(
                 name="buffalo_l",
                 root=str(root_dir),
+                allowed_modules=["detection"],
                 providers=providers,
             )
         except TypeError:
             app = FaceAnalysis(
                 name="buffalo_l",
                 root=str(root_dir),
+                allowed_modules=["detection"],
             )
     except Exception:
         app = FaceAnalysis(
             name="buffalo_l",
             root=str(root_dir),
+            allowed_modules=["detection"],
         )
 
     ctx_id = 0 if "CUDAExecutionProvider" in providers else -1
-    det_side = max(1, int(settings.RETINA_DET_SIZE))
-    det_size = (det_side, det_side)
-    app.prepare(ctx_id=ctx_id, det_size=det_size)
+    det_side = max(1, int(det_size if det_size is not None else settings.RETINA_DET_SIZE))
+    det_shape = (det_side, det_side)
+    app.prepare(ctx_id=ctx_id, det_size=det_shape)
     return app
 
 
 @lru_cache(maxsize=1)
 def get_face_app() -> FaceAnalysis:
+    return get_face_app_for_size(int(settings.RETINA_DET_SIZE))
+
+
+@lru_cache(maxsize=4)
+def get_face_app_for_size(det_size: int) -> FaceAnalysis:
 
     sess_options = _make_session_options()
     root_dir = _detect_models_root()
 
     for providers in (["CUDAExecutionProvider", "CPUExecutionProvider"], ["CPUExecutionProvider"]):
         try:
-            return _build_face_app(root_dir, providers, sess_options)
+            return _build_face_app(root_dir, providers, sess_options, det_size=det_size)
         except Exception as exc:
             if providers[0] == "CUDAExecutionProvider":
                 logger.warning("CUDA FaceAnalysis init failed, falling back to CPU: %s", exc)

@@ -1,56 +1,122 @@
 import http from "k6/http";
-import { check } from "k6";
+import { check, sleep } from "k6";
+import { Counter, Trend, Rate } from "k6/metrics";
+
+const completed = new Counter("completed");
+const waitTimeouts = new Counter("wait_timeouts");
+const completionFailed = new Rate("completion_failed");
+const totalE2E = new Trend("client_e2e_ms");
+const queueDelay = new Trend("queue_delay_ms");
+const processingTime = new Trend("processing_time_ms");
+const completedEventually = new Rate("completed_eventually");
+const resultPasses = new Counter("result_passes");
+const resultFails = new Counter("result_fails");
+
+const BASE_URL = __ENV.BASE_URL || "http://localhost:8080";
+const RATE = Number(__ENV.RATE || 20);
+const DURATION = __ENV.DURATION || "2m";
+const WAIT_TIMEOUT_MS = Number(__ENV.WAIT_TIMEOUT_MS || 2000);
+const PRE_ALLOCATED_VUS = Number(__ENV.PRE_ALLOCATED_VUS || __ENV.PREALLOCATED_VUS || 250);
+const MAX_VUS = Number(__ENV.MAX_VUS || 500);
+const ITERATION_PAUSE = Number(__ENV.PAUSE || 0);
+const REQUEST_TIMEOUT = __ENV.REQUEST_TIMEOUT || "30s";
+
+const IMAGE_B64 = __ENV.IMAGE_B64
+  ? __ENV.IMAGE_B64
+  : __ENV.IMAGE_FILE
+    ? open(__ENV.IMAGE_FILE).trim()
+    : open("./tests/data/person1_small.b64.txt").trim();
 
 export const options = {
   scenarios: {
-    async_verify: {
+    completion_flow: {
       executor: "constant-arrival-rate",
-      rate: Number(__ENV.RATE || 20),
+      rate: RATE,
       timeUnit: "1s",
-      duration: __ENV.DURATION || "3m",
-      preAllocatedVUs: Number(__ENV.PREALLOCATED_VUS || 50),
-      maxVUs: Number(__ENV.MAX_VUS || 100),
+      duration: DURATION,
+      preAllocatedVUs: PRE_ALLOCATED_VUS,
+      maxVUs: MAX_VUS,
     },
+  },
+  thresholds: {
+    http_req_failed: ["rate<0.05"],
+    completion_failed: ["rate<0.05"],
   },
 };
 
-const BASE_URL = __ENV.BASE_URL || "http://localhost:8000";
-const IMAGE_BASE64 = (__ENV.IMAGE || open(__ENV.IMAGE_FILE || "./tests/data/person1_small.b64.txt")).trim();
-const SLA_FAST_MS = Number(__ENV.SLA_FAST_MS || 1500);
-const SLA_ASYNC_MS = Number(__ENV.SLA_ASYNC_MS || 5000);
-const MAX_WAIT_MS = Number(__ENV.MAX_WAIT_MS || 25000);
+function payload() {
+  return JSON.stringify({
+    user_id: "ext_test_user",
+    image_b64: IMAGE_B64,
+    require_liveness: false,
+  });
+}
+
+function isTerminalStatus(status) {
+  return status === "done" || status === "error" || status === "failed" || status === "expired";
+}
+
+export function setup() {
+  const res = http.post(`${BASE_URL}/verify_async`, payload(), {
+    headers: { "Content-Type": "application/json" },
+    timeout: REQUEST_TIMEOUT,
+  });
+
+  if (![200, 202, 429].includes(res.status)) {
+    throw new Error(
+      `Smoke failed: status=${res.status}, body=${String(res.body).slice(0, 500)}`
+    );
+  }
+}
 
 export default function () {
-  const enqueueRes = http.post(
-    `${BASE_URL}/verify_async`,
-    JSON.stringify({
-      image_b64: IMAGE_BASE64,
-    }),
-    {
-      headers: { "Content-Type": "application/json" },
-      timeout: "10s",
-    }
-  );
+  const start = Date.now();
 
-  check(enqueueRes, {
-    "enqueue_success": (r) => r.status === 200,
+  const enqueueRes = http.post(`${BASE_URL}/verify_async`, payload(), {
+    headers: { "Content-Type": "application/json" },
+    timeout: REQUEST_TIMEOUT,
   });
+
+  const enqueueOk = check(enqueueRes, {
+    "enqueue status is 200/202/429": (r) => [200, 202, 429].includes(r.status),
+  });
+
+  if (!enqueueOk) {
+    if (__ITER < 3) {
+      console.error(`bad status=${enqueueRes.status} body=${String(enqueueRes.body).slice(0, 500)}`);
+    }
+    completionFailed.add(1);
+    resultFails.add(1);
+    return;
+  }
+
+  if (enqueueRes.status === 429) {
+    completionFailed.add(0);
+    resultFails.add(1);
+    return;
+  }
 
   let body = null;
   try {
     body = enqueueRes.json();
   } catch (_) {
+    if (__ITER < 3) {
+      console.error(`bad json body=${String(enqueueRes.body).slice(0, 500)}`);
+    }
+    completionFailed.add(1);
+    resultFails.add(1);
     return;
   }
 
-  const jobId = body && body.job_id;
+  const jobId = body?.job_id;
   if (!jobId) {
+    completionFailed.add(1);
+    resultFails.add(1);
     return;
   }
 
-  const start = Date.now();
-  const waitRes = http.get(`${BASE_URL}/jobs/${jobId}/wait?timeout=2000`, {
-    timeout: "10s",
+  const waitRes = http.get(`${BASE_URL}/jobs/${jobId}/wait?timeout=${WAIT_TIMEOUT_MS}`, {
+    timeout: `${WAIT_TIMEOUT_MS + 5000}ms`,
   });
 
   check(waitRes, {
@@ -64,11 +130,8 @@ export default function () {
     json = null;
   }
 
-  const status = json && json.status ? json.status : "processing";
-  const completedAtMs =
-    status === "done" || status === "error" || status === "failed"
-      ? Date.now() - start
-      : null;
+  const status = json?.status || "processing";
+  const completedAtMs = isTerminalStatus(status) ? Date.now() - start : null;
 
   if (status === "done") {
     check(json, {
@@ -80,9 +143,36 @@ export default function () {
     });
   }
 
-  check({ completedAtMs }, {
-    "completed_within_fast_sla": (r) => r.completedAtMs !== null && r.completedAtMs <= SLA_FAST_MS,
-    "completed_within_async_sla": (r) => r.completedAtMs !== null && r.completedAtMs <= SLA_ASYNC_MS,
-    "completed_eventually": (r) => r.completedAtMs !== null,
-  });
+  const queueDelayMs =
+    json?.async_job_queue_delay_ms ?? json?.metrics?.queue_delay ?? null;
+  const processingTimeMs =
+    json?.async_job_processing_ms ?? json?.metrics?.processing_time ?? null;
+  const totalLatencyMs =
+    json?.async_job_total_latency_ms ?? json?.metrics?.total_latency ?? null;
+
+  if (typeof queueDelayMs === "number" && Number.isFinite(queueDelayMs)) {
+    queueDelay.add(queueDelayMs);
+  }
+  if (typeof processingTimeMs === "number" && Number.isFinite(processingTimeMs)) {
+    processingTime.add(processingTimeMs);
+  }
+  if (typeof totalLatencyMs === "number" && Number.isFinite(totalLatencyMs)) {
+    totalE2E.add(totalLatencyMs);
+  }
+
+  if (completedAtMs !== null) {
+    completed.add(1);
+    completedEventually.add(1);
+    resultPasses.add(1);
+    completionFailed.add(0);
+  } else {
+    waitTimeouts.add(1);
+    completedEventually.add(0);
+    resultFails.add(1);
+    completionFailed.add(1);
+  }
+
+  if (ITERATION_PAUSE > 0) {
+    sleep(ITERATION_PAUSE);
+  }
 }

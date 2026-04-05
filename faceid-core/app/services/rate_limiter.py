@@ -24,13 +24,13 @@ def get_rate_limit_multiplier(queue_delay_ms: float) -> float:
 
 def get_inflight_limit(queue_delay_ms: float) -> int:
     if queue_delay_ms < 200:
-        return 20
+        return 30
     elif queue_delay_ms < 800:
-        return 10
+        return 15
     elif queue_delay_ms < 1500:
-        return 6
+        return 9
     else:
-        return 3
+        return 5
 
 
 def get_queue_delay() -> float:

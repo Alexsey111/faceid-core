@@ -5,13 +5,14 @@ import asyncio
 import json
 import logging
 import os
-import redis
 import time
 from time import perf_counter
 from typing import Any, Tuple, cast
 
 import cv2
 import numpy as np
+
+import redis
 
 from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.db.repositories.verification_repo import VerificationRepository
@@ -42,22 +43,12 @@ from app.services.verification_service import VerificationService
 
 logger = logging.getLogger(__name__)
 
-REDIS_POOL = redis.ConnectionPool(
-    host="redis",
-    port=6379,
-    db=0,
-    decode_responses=True,
-    max_connections=50,
-    retry_on_timeout=True,
-    socket_keepalive=True,
-)
-
-redis_client = redis.Redis(connection_pool=REDIS_POOL)
+redis_client = redis.from_url(settings.redis_url, decode_responses=True)
 QUEUE_NAME = "face_verify_queue"
 MAX_QUEUE_WAIT = 5.0
 MAX_JOB_AGE_MS = 3000
 MAX_IMAGE_SIDE = 480
-BATCH_COLLECT_TIMEOUT = float(os.getenv("BATCH_COLLECT_TIMEOUT", "0.05"))
+BATCH_COLLECT_TIMEOUT = float(os.getenv("BATCH_COLLECT_TIMEOUT", "0.005"))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "8"))
 _PIPELINE: Any | None = None
 
@@ -248,7 +239,7 @@ async def collect_batch() -> list[dict[str, Any]]:
         start = perf_counter()
         raw = cast(
             tuple[str, str] | None,
-            redis_client.brpop([QUEUE_NAME], timeout=0.1),  # type: ignore[arg-type]
+            redis_client.brpop([QUEUE_NAME], timeout=0),  # type: ignore[arg-type]
         )
         QUEUE_POP_LATENCY_MS.observe((perf_counter() - start) * 1000.0)
         if raw is None:
@@ -267,11 +258,7 @@ async def collect_batch() -> list[dict[str, Any]]:
         first_job = job
         jobs.append(job)
 
-    batch_start = time.time()
     while len(jobs) < batch_size:
-        if time.time() - batch_start > BATCH_COLLECT_TIMEOUT:
-            break
-
         start = perf_counter()
         raw = cast(str | None, redis_client.lpop(QUEUE_NAME))
         QUEUE_POP_LATENCY_MS.observe((perf_counter() - start) * 1000.0)

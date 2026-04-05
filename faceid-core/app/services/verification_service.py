@@ -517,6 +517,8 @@ class VerificationService:
                     "risk": liveness_risk,
                 },
                 "replay_detected": replay_detected,
+                "bbox": features.get("bbox"),
+                "bbox_source": features.get("bbox_source"),
             }
 
         embedding = features["embedding"]
@@ -590,7 +592,9 @@ class VerificationService:
                     "score": liveness_score,
                     "risk": liveness_risk
                 },
-                "replay_detected": replay_detected
+                "replay_detected": replay_detected,
+                "bbox": features.get("bbox"),
+                "bbox_source": features.get("bbox_source"),
             }
 
         # VECTOR SEARCH (top-2 for margin calculation)
@@ -693,7 +697,9 @@ class VerificationService:
             "similarity": float(decision_similarity),
             "margin": float(margin),
             "liveness_passed": liveness_passed,
-            "replay_detected": replay_detected
+            "replay_detected": replay_detected,
+            "bbox": features.get("bbox"),
+            "bbox_source": features.get("bbox_source"),
         }
 
     async def verify_face_sync(self, image_bytes: bytes) -> dict:
