@@ -1,9 +1,8 @@
-# faceid-core\app\api\routes\health.py
-
 from typing import Any
 import logging
 
 from fastapi import APIRouter, Depends
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
 
@@ -18,24 +17,20 @@ logger = logging.getLogger("health")
 async def health() -> dict[str, str]:
     """
     Liveness probe — быстрый, без зависимостей.
-    Используется для Kubernetes livenessProbe.
     """
-    return {
-        "status": "ok"
-    }
+    return {"status": "ok"}
 
 
 @router.get("/ready")
-async def readiness(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
+async def readiness(db: AsyncSession = Depends(get_db)) -> JSONResponse:
     """
     Readiness probe — проверяет зависимости.
-    Используется для Kubernetes readinessProbe.
+    Возвращает 200 только если и БД, и Redis доступны.
     """
-
     status = "ok"
     checks: dict[str, str] = {}
 
-    # --- DB check ---
+    # DB
     try:
         await db.execute(text("SELECT 1"))
         checks["db"] = "ok"
@@ -44,7 +39,7 @@ async def readiness(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         checks["db"] = "fail"
         status = "degraded"
 
-    # --- Redis check ---
+    # Redis
     try:
         redis_client.ping()
         checks["redis"] = "ok"
@@ -53,7 +48,12 @@ async def readiness(db: AsyncSession = Depends(get_db)) -> dict[str, Any]:
         checks["redis"] = "fail"
         status = "degraded"
 
-    return {
+    payload: dict[str, Any] = {
         "status": status,
-        "checks": checks
+        "checks": checks,
     }
+
+    if status != "ok":
+        return JSONResponse(status_code=503, content=payload)
+
+    return JSONResponse(status_code=200, content=payload)

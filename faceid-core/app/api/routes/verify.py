@@ -8,6 +8,7 @@ import json
 import logging
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Optional
 
 import httpx
@@ -65,12 +66,23 @@ def _pick_fast_worker_url() -> str:
 
 
 def _get_request_id(request: Request) -> str:
-    request_id = getattr(request.state, "request_id", None)
+    state = getattr(request, "state", None)
+    if state is None:
+        state = SimpleNamespace()
+        try:
+            setattr(request, "state", state)
+        except Exception:
+            pass
+
+    request_id = getattr(state, "request_id", None)
     if request_id:
         return request_id
 
     request_id = f"req-{int(time.time() * 1000)}"
-    request.state.request_id = request_id
+    try:
+        state.request_id = request_id
+    except Exception:
+        pass
     return request_id
 
 

@@ -6,6 +6,8 @@ from typing import Any
 import cv2
 import numpy as np
 
+from app.core.config import settings
+
 
 @dataclass(slots=True)
 class QualityCheckResult:
@@ -16,48 +18,58 @@ class QualityCheckResult:
 
 class ImageQualityGate:
     """
-    Лёгкий quality gate без тяжёлых ML-операций.
+    Lightweight quality gate with configurable thresholds and modes.
 
-    Этапы:
-    1. Pre-detect checks:
-       - min image size
-       - blur
-       - brightness
-       - contrast
-
-    2. Post-detect checks:
-       - min face size
-       - basic pose check (если есть landmarks)
+    Modes:
+    - hard: reject on threshold violations
+    - soft: never reject, but return warning details
+    - off: always pass, with minimal details
     """
 
-    MIN_IMAGE_SIDE = 160
+    def __init__(self) -> None:
+        self.mode = settings.QUALITY_GATE_MODE
 
-    # Чем меньше variance of Laplacian, тем сильнее blur
-    MIN_BLUR_SCORE = 45.0
+        self.min_image_side = int(settings.QUALITY_MIN_IMAGE_SIDE)
+        self.min_blur_score = float(settings.QUALITY_MIN_BLUR_SCORE)
+        self.min_brightness = float(settings.QUALITY_MIN_BRIGHTNESS)
+        self.max_brightness = float(settings.QUALITY_MAX_BRIGHTNESS)
+        self.min_contrast = float(settings.QUALITY_MIN_CONTRAST)
 
-    # Средняя яркость grayscale
-    MIN_BRIGHTNESS = 35.0
-    MAX_BRIGHTNESS = 225.0
+        self.min_face_side = int(settings.QUALITY_MIN_FACE_SIDE)
+        self.max_eye_line_diff_ratio = float(settings.QUALITY_MAX_EYE_LINE_DIFF_RATIO)
+        self.max_nose_offset_ratio = float(settings.QUALITY_MAX_NOSE_OFFSET_RATIO)
 
-    # std grayscale
-    MIN_CONTRAST = 18.0
+    def _wrap_result(
+        self,
+        *,
+        passed: bool,
+        reason: str | None,
+        details: dict[str, Any],
+        stage: str,
+    ) -> QualityCheckResult:
+        base_details = {
+            **details,
+            "quality_gate_mode": self.mode,
+            "quality_stage": stage,
+            "quality_warning": reason,
+            "quality_hard_reject": bool(self.mode == "hard" and not passed),
+        }
 
-    # Минимальный размер лица по короткой стороне bbox
-    MIN_FACE_SIDE = 72
+        if self.mode == "off":
+            return QualityCheckResult(passed=True, reason=None, details=base_details)
 
-    # Грубые эвристики по pose
-    MAX_EYE_LINE_DIFF_RATIO = 0.12
-    MAX_NOSE_OFFSET_RATIO = 0.18
+        if self.mode == "soft":
+            return QualityCheckResult(passed=True, reason=None, details=base_details)
+
+        return QualityCheckResult(passed=passed, reason=reason, details=base_details)
 
     def evaluate_image(self, image: np.ndarray) -> QualityCheckResult:
-        """
-        Проверка качества полного изображения до detector.
-        """
         if image is None or image.size == 0:
-            return QualityCheckResult(
+            return self._wrap_result(
                 passed=False,
                 reason="invalid_image",
                 details={},
+                stage="image",
             )
 
         height, width = image.shape[:2]
@@ -78,45 +90,51 @@ class ImageQualityGate:
             "contrast": round(contrast, 2),
         }
 
-        if min_side < self.MIN_IMAGE_SIDE:
-            return QualityCheckResult(
+        if min_side < self.min_image_side:
+            return self._wrap_result(
                 passed=False,
                 reason="image_too_small",
                 details=details,
+                stage="image",
             )
 
-        if blur_score < self.MIN_BLUR_SCORE:
-            return QualityCheckResult(
+        if blur_score < self.min_blur_score:
+            return self._wrap_result(
                 passed=False,
                 reason="image_blurry",
                 details=details,
+                stage="image",
             )
 
-        if brightness < self.MIN_BRIGHTNESS:
-            return QualityCheckResult(
+        if brightness < self.min_brightness:
+            return self._wrap_result(
                 passed=False,
                 reason="image_too_dark",
                 details=details,
+                stage="image",
             )
 
-        if brightness > self.MAX_BRIGHTNESS:
-            return QualityCheckResult(
+        if brightness > self.max_brightness:
+            return self._wrap_result(
                 passed=False,
                 reason="image_too_bright",
                 details=details,
+                stage="image",
             )
 
-        if contrast < self.MIN_CONTRAST:
-            return QualityCheckResult(
+        if contrast < self.min_contrast:
+            return self._wrap_result(
                 passed=False,
                 reason="low_contrast",
                 details=details,
+                stage="image",
             )
 
-        return QualityCheckResult(
+        return self._wrap_result(
             passed=True,
             reason=None,
             details=details,
+            stage="image",
         )
 
     def evaluate_detection(
@@ -124,9 +142,6 @@ class ImageQualityGate:
         bbox: list[int] | tuple[int, int, int, int],
         landmarks: Any | None,
     ) -> QualityCheckResult:
-        """
-        Проверка качества уже найденного лица.
-        """
         x1, y1, x2, y2 = map(int, bbox)
         face_w = max(0, x2 - x1)
         face_h = max(0, y2 - y1)
@@ -136,29 +151,36 @@ class ImageQualityGate:
             "face_width": int(face_w),
             "face_height": int(face_h),
             "min_face_side": int(min_face_side),
+            "bbox_x1": int(x1),
+            "bbox_y1": int(y1),
+            "bbox_x2": int(x2),
+            "bbox_y2": int(y2),
         }
 
-        if min_face_side < self.MIN_FACE_SIDE:
-            return QualityCheckResult(
+        if min_face_side < self.min_face_side:
+            return self._wrap_result(
                 passed=False,
                 reason="face_too_small",
                 details=details,
+                stage="face",
             )
 
         pose_check = self._check_pose(landmarks, face_w, face_h)
         details.update(pose_check["details"])
 
         if not pose_check["passed"]:
-            return QualityCheckResult(
+            return self._wrap_result(
                 passed=False,
                 reason=pose_check["reason"],
                 details=details,
+                stage="face",
             )
 
-        return QualityCheckResult(
+        return self._wrap_result(
             passed=True,
             reason=None,
             details=details,
+            stage="face",
         )
 
     def _check_pose(
@@ -167,10 +189,6 @@ class ImageQualityGate:
         face_w: int,
         face_h: int,
     ) -> dict[str, Any]:
-        """
-        Базовая pose-проверка.
-        Если landmarks нет, не режем кадр по pose.
-        """
         if landmarks is None:
             return {
                 "passed": True,
@@ -199,7 +217,6 @@ class ImageQualityGate:
         nose = pts[2]
 
         eye_line_diff_ratio = abs(float(left_eye[1] - right_eye[1])) / float(max(face_h, 1))
-
         eye_center_x = float((left_eye[0] + right_eye[0]) / 2.0)
         nose_offset_ratio = abs(float(nose[0] - eye_center_x)) / float(max(face_w, 1))
 
@@ -209,14 +226,14 @@ class ImageQualityGate:
             "nose_offset_ratio": round(nose_offset_ratio, 4),
         }
 
-        if eye_line_diff_ratio > self.MAX_EYE_LINE_DIFF_RATIO:
+        if eye_line_diff_ratio > self.max_eye_line_diff_ratio:
             return {
                 "passed": False,
                 "reason": "bad_pose",
                 "details": details,
             }
 
-        if nose_offset_ratio > self.MAX_NOSE_OFFSET_RATIO:
+        if nose_offset_ratio > self.max_nose_offset_ratio:
             return {
                 "passed": False,
                 "reason": "bad_pose",

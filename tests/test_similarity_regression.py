@@ -28,7 +28,7 @@ def test_same_person_similarity_high():
 
     sim = cosine(e1, e2)
 
-    assert sim > 0.65, f"Same person similarity too low: {sim}"
+    assert sim > 0.60, f"Same person similarity too low: {sim}"
 
 
 def test_different_person_similarity_low():

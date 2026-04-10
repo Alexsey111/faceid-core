@@ -5,8 +5,11 @@ import runpy
 import time
 from types import SimpleNamespace
 
+import cv2
+import numpy as np
 from fastapi import HTTPException
 import pytest
+from starlette.requests import Request
 
 from app.api.routes import job_status as job_status_route
 from app.api.routes import verify as verify_route
@@ -23,6 +26,7 @@ class FakeRedis:
         self.rpush_calls = []
         self.blpop_values = []
         self.queue_values = {}
+        self.inflight = 0
 
     def setex(self, key, ttl, value):
         self.set_calls.append((key, ttl, value))
@@ -34,6 +38,27 @@ class FakeRedis:
     def rpush(self, key, value):
         self.rpush_calls.append((key, value))
         self.queue_values.setdefault(key, []).append(value)
+
+    def incr(self, key):
+        if key == "inflight_jobs":
+            self.inflight += 1
+            self.get_values[key] = str(self.inflight)
+            return self.inflight
+        raise AttributeError(key)
+
+    def decr(self, key):
+        if key == "inflight_jobs":
+            self.inflight = max(0, self.inflight - 1)
+            self.get_values[key] = str(self.inflight)
+            return self.inflight
+        raise AttributeError(key)
+
+    def eval(self, script, numkeys, key, delta):
+        if key == "inflight_jobs":
+            self.inflight = max(0, self.inflight - int(delta))
+            self.get_values[key] = str(self.inflight)
+            return self.inflight
+        raise AttributeError(key)
 
     def llen(self, key):
         return len(self.queue_values.get(key, []))
@@ -55,6 +80,9 @@ class FakeRedis:
             if queue:
                 return key.encode("utf-8"), queue.pop(0)
         return None
+
+    def brpop(self, keys, timeout=0):
+        return self.blpop(keys)
 
 
 class DummySemaphore:
@@ -113,8 +141,8 @@ async def test_verify_result_store_set_and_get(monkeypatch):
     fake_redis = FakeRedis()
     monkeypatch.setattr(verify_result_store, "redis_client", fake_redis)
 
-    verify_result_store.VerifyResultStore.set_done("job-1", {"status": "ok"})
-    verify_result_store.VerifyResultStore.set_error("job-2", "boom")
+    verify_result_store.VerifyResultStore.set_done("job-1", {"status": "ok"}, {})
+    verify_result_store.VerifyResultStore.set_error("job-2", "boom", {})
 
     done_key, done_ttl, done_payload = fake_redis.set_calls[0]
     error_key, error_ttl, error_payload = fake_redis.set_calls[1]
@@ -272,6 +300,10 @@ async def test_verify_job_queue_enqueue(monkeypatch):
 @pytest.mark.asyncio
 async def test_verify_async_route_enqueues(monkeypatch):
     captured = {}
+    image = np.zeros((200, 200, 3), dtype=np.uint8)
+    ok, encoded = cv2.imencode(".jpg", image)
+    assert ok
+    image_b64 = base64.b64encode(encoded.tobytes()).decode("utf-8")
 
     def fake_enqueue(payload):
         captured["payload"] = payload
@@ -279,17 +311,38 @@ async def test_verify_async_route_enqueues(monkeypatch):
 
     monkeypatch.setattr(verify_async_route.VerifyJobQueue, "enqueue", staticmethod(fake_enqueue))
 
-    result = await verify_async_route.verify_async(
-        verify_async_route.VerifyAsyncRequest(
-            image_b64="ZmFrZQ==",
-            user_id="42",
-            require_liveness=True,
-        )
+    body = json.dumps(
+        {
+            "image_b64": image_b64,
+            "user_id": "42",
+            "require_liveness": True,
+        }
+    ).encode("utf-8")
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/verify_async",
+            "headers": [],
+            "query_string": b"",
+            "client": ("testclient", 12345),
+            "server": ("testserver", 80),
+            "scheme": "http",
+            "root_path": "",
+            "http_version": "1.1",
+        },
+        receive,
     )
+
+    result = await verify_async_route.verify_async(request)
 
     assert result == {"job_id": "job-xyz", "status": "queued"}
     assert captured["payload"] == {
-        "image_b64": "ZmFrZQ==",
+        "image_b64": image_b64,
         "user_id": "42",
         "require_liveness": True,
     }
@@ -496,163 +549,59 @@ async def test_verify_base64_fallbacks(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_verify_worker_process_job_success(monkeypatch):
-    fake_redis = FakeRedis()
-    semaphore = DummySemaphore()
-    captured = {}
-    db = DummyAsyncSession()
-
-    class FakeEmbeddingRepo:
-        def __init__(self, db_obj):
-            self.db = db_obj
-
-    class FakeVerificationRepo:
-        def __init__(self, db_obj):
-            self.db = db_obj
-
-    class FakeSearchService:
-        def __init__(self, embedding_repo):
-            self.embedding_repo = embedding_repo
-
-    class FakeVerificationService:
-        def __init__(self, **kwargs):
-            captured["service_kwargs"] = kwargs
-
-        async def verify_face(self, **kwargs):
-            captured["verify_kwargs"] = kwargs
-            return {"status": "match", "user_id": 9}
-
-    monkeypatch.setattr(verify_worker, "redis_client", fake_redis)
-    monkeypatch.setattr(verify_worker, "semaphore", semaphore)
-    monkeypatch.setattr(verify_worker, "AsyncSessionLocal", lambda: DummySessionManager(db))
-    monkeypatch.setattr(verify_worker, "EmbeddingRepository", FakeEmbeddingRepo)
-    monkeypatch.setattr(verify_worker, "VerificationRepository", FakeVerificationRepo)
-    monkeypatch.setattr(verify_worker, "SearchService", FakeSearchService)
-    monkeypatch.setattr(verify_worker, "VerificationService", FakeVerificationService)
-
-    store_calls = {}
-
-    def fake_set_done(job_id, result):
-        store_calls["done"] = (job_id, result)
-
-    monkeypatch.setattr(verify_worker.VerifyResultStore, "set_done", staticmethod(fake_set_done))
-    monkeypatch.setattr(verify_worker.VerifyResultStore, "set_error", staticmethod(lambda *args, **kwargs: None))
-
-    await verify_worker.process_job(
-        {
-            "job_id": "job-1",
-            "payload": {
-                "image_b64": base64.b64encode(b"image-bytes").decode("utf-8"),
-                "user_id": "77",
-                "require_liveness": True,
-            },
-        }
-    )
-
-    assert semaphore.entered == 1
-    assert semaphore.exited == 1
-    assert db.flushed is False
-    assert captured["verify_kwargs"] == {
-        "image_bytes": b"image-bytes",
-        "user_id": "77",
-        "require_liveness": True,
-        "job_id": "job-1",
-    }
-    assert store_calls["done"] == ("job-1", {"status": "match", "user_id": 9})
-
-
-@pytest.mark.asyncio
-async def test_verify_worker_process_job_error(monkeypatch):
-    fake_redis = FakeRedis()
-    semaphore = DummySemaphore()
-    db = DummyAsyncSession()
-
-    class FakeEmbeddingRepo:
-        def __init__(self, db_obj):
-            self.db = db_obj
-
-    class FakeVerificationRepo:
-        def __init__(self, db_obj):
-            self.db = db_obj
-
-    class FakeSearchService:
-        def __init__(self, embedding_repo):
-            self.embedding_repo = embedding_repo
-
-    class FakeVerificationService:
-        def __init__(self, **kwargs):
-            pass
-
-        async def verify_face(self, **kwargs):
-            raise RuntimeError("boom")
-
-    monkeypatch.setattr(verify_worker, "redis_client", fake_redis)
-    monkeypatch.setattr(verify_worker, "semaphore", semaphore)
-    monkeypatch.setattr(verify_worker, "AsyncSessionLocal", lambda: DummySessionManager(db))
-    monkeypatch.setattr(verify_worker, "EmbeddingRepository", FakeEmbeddingRepo)
-    monkeypatch.setattr(verify_worker, "VerificationRepository", FakeVerificationRepo)
-    monkeypatch.setattr(verify_worker, "SearchService", FakeSearchService)
-    monkeypatch.setattr(verify_worker, "VerificationService", FakeVerificationService)
-
-    store_calls = {}
-
-    def fake_set_error(job_id, error):
-        store_calls["error"] = (job_id, error)
-
-    monkeypatch.setattr(verify_worker.VerifyResultStore, "set_done", staticmethod(lambda *args, **kwargs: None))
-    monkeypatch.setattr(verify_worker.VerifyResultStore, "set_error", staticmethod(fake_set_error))
-
-    await verify_worker.process_job(
-        {
-            "job_id": "job-2",
-            "payload": {
-                "image_b64": base64.b64encode(b"image-bytes").decode("utf-8"),
-            },
-        }
-    )
-
-    assert semaphore.entered == 1
-    assert semaphore.exited == 1
-    assert store_calls["error"][0] == "job-2"
-    assert "boom" in store_calls["error"][1]
-
-
-@pytest.mark.asyncio
 async def test_verify_worker_run_worker_processes_one_job(monkeypatch):
-    fake_redis = FakeRedis()
-    fake_redis.blpop_values.append((b"face_verify_queue", json.dumps({
-        "job_id": "job-3",
-        "payload": {"image_b64": base64.b64encode(b"image-bytes").decode("utf-8")},
-    }).encode("utf-8")))
-    fake_redis.blpop_values.append(RuntimeError("stop"))
-
     seen = {}
+    batches = [
+        [
+            {
+                "job_id": "job-3",
+                "payload": {"image_b64": base64.b64encode(b"image-bytes").decode("utf-8")},
+            }
+        ]
+    ]
 
-    async def fake_process_job(job_data):
+    async def fake_collect_batch():
+        if batches:
+            return batches.pop(0)
+        raise RuntimeError("stop")
+
+    async def fake_process_batch(job_data):
         seen["job_data"] = job_data
         raise RuntimeError("stop")
 
-    monkeypatch.setattr(verify_worker, "redis_client", fake_redis)
-    monkeypatch.setattr(verify_worker, "process_job", fake_process_job)
+    monkeypatch.setattr(verify_worker, "collect_batch", fake_collect_batch)
+    monkeypatch.setattr(verify_worker, "process_batch", fake_process_batch)
+    monkeypatch.setattr(verify_worker, "start_http_server", lambda *args, **kwargs: None)
 
     with pytest.raises(RuntimeError, match="stop"):
         await verify_worker.run_worker()
 
-    assert seen["job_data"]["job_id"] == "job-3"
-    assert seen["job_data"]["payload"]["image_b64"]
+    assert seen["job_data"][0]["job_id"] == "job-3"
+    assert seen["job_data"][0]["payload"]["image_b64"]
 
 
 @pytest.mark.asyncio
 async def test_verify_worker_run_worker_skips_empty_queue(monkeypatch):
-    fake_redis = FakeRedis()
-    fake_redis.blpop_values.append(None)
-    fake_redis.blpop_values.append(RuntimeError("stop"))
+    calls = {"process_batch": 0}
 
-    monkeypatch.setattr(verify_worker, "redis_client", fake_redis)
-    monkeypatch.setattr(verify_worker, "process_job", lambda *args, **kwargs: None)
+    batches = [[]]
+
+    async def fake_collect_batch():
+        if batches:
+            return batches.pop(0)
+        raise RuntimeError("stop")
+
+    async def fake_process_batch(*args, **kwargs):
+        calls["process_batch"] += 1
+
+    monkeypatch.setattr(verify_worker, "collect_batch", fake_collect_batch)
+    monkeypatch.setattr(verify_worker, "process_batch", fake_process_batch)
+    monkeypatch.setattr(verify_worker, "start_http_server", lambda *args, **kwargs: None)
 
     with pytest.raises(RuntimeError, match="stop"):
         await verify_worker.run_worker()
+
+    assert calls["process_batch"] == 0
 
 
 @pytest.mark.asyncio

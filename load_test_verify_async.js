@@ -28,7 +28,14 @@ const HARD_IMAGE_FILES = ((__ENV.HARD_IMAGE_FILES || __ENV.HARD_IMAGE_FILE || ""
 const HARD_RATIO = Number(__ENV.HARD_RATIO || 0.3);
 
 function loadImageBase64(path) {
-  return encoding.b64encode(open(path, "b"));
+  const normalized = path.toLowerCase();
+
+  if (normalized.endsWith(".b64.txt")) {
+    return open(path).replace(/^\uFEFF/, "").trim();
+  }
+
+  const bytes = open(path, "b");
+  return encoding.b64encode(bytes);
 }
 
 const NORMAL_IMAGE_BASE64S = NORMAL_IMAGE_FILES.map(loadImageBase64);

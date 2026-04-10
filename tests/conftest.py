@@ -21,6 +21,7 @@ os.environ["CELERY_BROKER_URL"] = "redis://localhost:6379/0"
 os.environ["CELERY_RESULT_BACKEND"] = "redis://localhost:6379/0"
 os.environ["MINIO_ENDPOINT"] = "localhost:9000"
 os.environ["MODELS_DIR"] = os.path.join(ROOT_DIR, "models")
+os.environ["USE_PIPELINE_V2"] = "false"
 os.environ["DATABASE_URL"] = "postgresql+asyncpg://postgres:postgres@localhost:5433/postgres"
 
 from app.core.config import settings
@@ -31,6 +32,7 @@ settings.DB_MAX_OVERFLOW = 0
 settings.CELERY_BROKER_URL = "redis://localhost:6379/0"
 settings.CELERY_RESULT_BACKEND = "redis://localhost:6379/0"
 settings.MODELS_DIR = os.path.join(ROOT_DIR, "models")
+settings.USE_PIPELINE_V2 = False
 
 TEST_DB_URL = os.environ["DATABASE_URL"]
 test_engine = create_async_engine(

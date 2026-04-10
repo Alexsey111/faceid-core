@@ -15,9 +15,7 @@ _REDIS_POOL = redis.ConnectionPool(
 
 
 class RedisClient:
-
     def __init__(self):
-
         self.client = redis.Redis(connection_pool=_REDIS_POOL)
 
     def get(self, key: str) -> str | None:
@@ -28,6 +26,9 @@ class RedisClient:
 
     def setex(self, key: str, value: str, ttl: int = 300) -> None:
         self.client.setex(key, ttl, value)
+
+    def set_if_absent(self, key: str, value: str, ttl: int = 300) -> bool:
+        return bool(self.client.set(key, value, ex=ttl, nx=True))
 
     def delete(self, key: str) -> None:
         self.client.delete(key)

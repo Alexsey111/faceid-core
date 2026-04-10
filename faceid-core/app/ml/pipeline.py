@@ -8,12 +8,14 @@ import numpy as np
 import time
 
 from app.core.config import settings
+from app.ml.dependencies import get_batch_encoder
+from app.ml.batch_encoder import BatchEncoder
 from app.ml.preprocessing.image_preprocessor import ImagePreprocessor
 from app.ml.detection.retinaface_detector import RetinaFaceDetector
 from app.ml.liveness.antispoof_model import AntiSpoofModel
 from app.ml.liveness.onnx_liveness import OnnxLivenessChecker
 from app.ml.liveness.model_paths import resolve_liveness_model_path
-from app.ml.embedding.arcface_encoder import ArcFaceEncoder
+from app.ml.embedding.onnx_arcface_encoder import OnnxArcFaceEncoder
 
 
 class FacePipeline:
@@ -27,14 +29,14 @@ class FacePipeline:
 
         # Lazy init
         self.detector: Optional[RetinaFaceDetector] = None
-        self.encoder: Optional[ArcFaceEncoder] = None
+        self.encoder: BatchEncoder | OnnxArcFaceEncoder | None = None
         self.liveness: Optional[AntiSpoofModel] = None
         self.liveness_checker: Optional[OnnxLivenessChecker] = None
 
     def _init(self):
         if not self._initialized:
-            self.detector = RetinaFaceDetector()
-            self.encoder = ArcFaceEncoder()
+            self.detector = RetinaFaceDetector(det_size=settings.RETINA_DET_SIZE)
+            self.encoder = get_batch_encoder()
 
             # Liveness model is optional
             model_path = resolve_liveness_model_path(settings.MODELS_DIR)
@@ -76,14 +78,16 @@ class FacePipeline:
         assert self.encoder is not None, "encoder not initialized"
 
         t0 = time.time()
-        embedding = self.encoder.normalize(detection["embedding"])
+        x1, y1, x2, y2 = map(int, detection["bbox"])
+        face_crop = image[y1:y2, x1:x2]
+        timings["align_crop_ms"] = (time.time() - t0) * 1000
+
+        t0 = time.time()
+        embedding = self.encoder.encode(face_crop)
         timings["encode_ms"] = (time.time() - t0) * 1000
 
         # --- LIVENESS ---
         t0 = time.time()
-
-        x1, y1, x2, y2 = map(int, detection["bbox"])
-        face_crop = image[y1:y2, x1:x2]
 
         passive_score: Optional[float] = None
         if self.liveness and settings.DEBUG:

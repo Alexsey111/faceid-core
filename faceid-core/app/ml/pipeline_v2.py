@@ -117,6 +117,7 @@ class FacePipelineV2:
                 image.shape,
             )
 
+            t_align_crop = time.time()
             roi, _ = crop_image(image, (x1, y1, x2, y2))
 
             if roi.mean() < 20:
@@ -125,6 +126,7 @@ class FacePipelineV2:
             bbox_source = "fast"
             bbox_source_detail = "fast"
             face_input = cv2.resize(roi, (112, 112))
+            timings["align_crop_ms"] = (time.time() - t_align_crop) * 1000
             detection = {
                 "bbox": [x1, y1, x2, y2],
                 "landmarks": None,
@@ -155,7 +157,12 @@ class FacePipelineV2:
             return {
                 "status": "quality_reject",
                 "quality_reason": face_quality.reason,
-                "quality_details": face_quality.details,
+                "quality_warning": face_quality.details.get("quality_warning"),
+                "quality_mode": face_quality.details.get("quality_gate_mode"),
+                "quality_details": {
+                    **image_quality.details,
+                    **face_quality.details,
+                },
                 "bbox": detection["bbox"],
                 "landmarks": detection.get("landmarks"),
                 "bbox_source": bbox_source,
@@ -209,6 +216,14 @@ class FacePipelineV2:
             "liveness_passed": liveness_passed,
             "liveness_score": liveness_score,
             "bbox_source_detail": bbox_source_detail,
+            "quality_warning": (
+                image_quality.details.get("quality_warning")
+                or face_quality.details.get("quality_warning")
+            ),
+            "quality_mode": (
+                face_quality.details.get("quality_gate_mode")
+                or image_quality.details.get("quality_gate_mode")
+            ),
             "quality_details": {
                 **image_quality.details,
                 **face_quality.details,
@@ -239,6 +254,8 @@ class FacePipelineV2:
             return {
                 "status": "quality_reject",
                 "quality_reason": image_quality.reason,
+                "quality_warning": image_quality.details.get("quality_warning"),
+                "quality_mode": image_quality.details.get("quality_gate_mode"),
                 "quality_details": image_quality.details,
                 "timings": timings,
             }
@@ -246,6 +263,7 @@ class FacePipelineV2:
         t0 = time.time()
         fast_faces = self.fast_detector.detect(image)
         timings["fast_detect_ms"] = (time.time() - t0) * 1000
+        timings["detect_ms"] = timings["fast_detect_ms"]
 
         return self._prepare_face_from_detection(image, image_quality, fast_faces, timings)
 
@@ -270,6 +288,8 @@ class FacePipelineV2:
             return {
                 "status": "quality_reject",
                 "quality_reason": image_quality.reason,
+                "quality_warning": image_quality.details.get("quality_warning"),
+                "quality_mode": image_quality.details.get("quality_gate_mode"),
                 "quality_details": image_quality.details,
                 "timings": timings,
             }
@@ -277,6 +297,7 @@ class FacePipelineV2:
         t0 = time.time()
         fast_faces = self.fast_detector.detect(image)
         timings["fast_detect_ms"] = (time.time() - t0) * 1000
+        timings["detect_ms"] = timings["fast_detect_ms"]
 
         return self._prepare_face_from_detection(image, image_quality, fast_faces, timings)
 
@@ -289,6 +310,8 @@ class FacePipelineV2:
         image_qualities: list[Any] = []
         timings_list: list[Dict[str, float]] = []
         results: list[Dict[str, Any]] = []
+        eligible_indices: list[int] = []
+        eligible_images: list[np.ndarray] = []
 
         for image_bytes in image_bytes_list:
             timings: Dict[str, float] = {}
@@ -303,11 +326,40 @@ class FacePipelineV2:
             images.append(image)
             image_qualities.append(image_quality)
             timings_list.append(timings)
+            if image_quality.passed:
+                eligible_indices.append(len(images) - 1)
+                eligible_images.append(image)
 
-        fast_faces_list = self.fast_detector.detect_batch(images)
+        if eligible_images:
+            t0 = time.perf_counter()
+            eligible_fast_faces_list = self.fast_detector.detect_batch(eligible_images)
+            detect_batch_ms = (time.perf_counter() - t0) * 1000.0
+            per_image_detect_ms = detect_batch_ms / max(1, len(eligible_images))
+        else:
+            eligible_fast_faces_list = []
+            detect_batch_ms = 0.0
+            per_image_detect_ms = 0.0
 
-        for image, image_quality, fast_faces, timings in zip(
-            images, image_qualities, fast_faces_list, timings_list
+        if len(eligible_fast_faces_list) != len(eligible_images):
+            raise RuntimeError(
+                "detect_batch returned unexpected batch size: "
+                f"{len(eligible_fast_faces_list)} != {len(eligible_images)}"
+            )
+
+        logger.info(
+            "[BATCH DETECT] size=%s detect_batch_ms=%.2f per_image_detect_ms=%.2f",
+            len(eligible_images),
+            detect_batch_ms,
+            per_image_detect_ms,
+        )
+
+        eligible_fast_faces_by_index = {
+            idx: fast_faces
+            for idx, fast_faces in zip(eligible_indices, eligible_fast_faces_list)
+        }
+
+        for idx, (image, image_quality, timings) in enumerate(
+            zip(images, image_qualities, timings_list)
         ):
             if not image_quality.passed:
                 timings["total_pipeline_ms"] = sum(timings.values())
@@ -315,12 +367,17 @@ class FacePipelineV2:
                     {
                         "status": "quality_reject",
                         "quality_reason": image_quality.reason,
+                        "quality_warning": image_quality.details.get("quality_warning"),
+                        "quality_mode": image_quality.details.get("quality_gate_mode"),
                         "quality_details": image_quality.details,
                         "timings": timings,
                     }
                 )
                 continue
 
+            timings["detect_ms"] = per_image_detect_ms
+            timings["detect_batch_ms_total"] = detect_batch_ms
+            fast_faces = eligible_fast_faces_by_index.get(idx, [])
             results.append(
                 self._prepare_face_from_detection(image, image_quality, fast_faces, timings)
             )
@@ -336,6 +393,8 @@ class FacePipelineV2:
         timings_list: list[Dict[str, float]] = []
         processed_images: list[np.ndarray] = []
         results: list[Dict[str, Any]] = []
+        eligible_indices: list[int] = []
+        eligible_images: list[np.ndarray] = []
 
         for image in images:
             timings: Dict[str, float] = {}
@@ -350,11 +409,40 @@ class FacePipelineV2:
             processed_images.append(processed_image)
             image_qualities.append(image_quality)
             timings_list.append(timings)
+            if image_quality.passed:
+                eligible_indices.append(len(processed_images) - 1)
+                eligible_images.append(processed_image)
 
-        fast_faces_list = self.fast_detector.detect_batch(processed_images)
+        if eligible_images:
+            t0 = time.perf_counter()
+            eligible_fast_faces_list = self.fast_detector.detect_batch(eligible_images)
+            detect_batch_ms = (time.perf_counter() - t0) * 1000.0
+            per_image_detect_ms = detect_batch_ms / max(1, len(eligible_images))
+        else:
+            eligible_fast_faces_list = []
+            detect_batch_ms = 0.0
+            per_image_detect_ms = 0.0
 
-        for image, image_quality, fast_faces, timings in zip(
-            processed_images, image_qualities, fast_faces_list, timings_list
+        if len(eligible_fast_faces_list) != len(eligible_images):
+            raise RuntimeError(
+                "detect_batch returned unexpected batch size: "
+                f"{len(eligible_fast_faces_list)} != {len(eligible_images)}"
+            )
+
+        logger.info(
+            "[BATCH DETECT] size=%s detect_batch_ms=%.2f per_image_detect_ms=%.2f",
+            len(eligible_images),
+            detect_batch_ms,
+            per_image_detect_ms,
+        )
+
+        eligible_fast_faces_by_index = {
+            idx: fast_faces
+            for idx, fast_faces in zip(eligible_indices, eligible_fast_faces_list)
+        }
+
+        for idx, (image, image_quality, timings) in enumerate(
+            zip(processed_images, image_qualities, timings_list)
         ):
             if not image_quality.passed:
                 timings["total_pipeline_ms"] = sum(timings.values())
@@ -362,17 +450,23 @@ class FacePipelineV2:
                     {
                         "status": "quality_reject",
                         "quality_reason": image_quality.reason,
+                        "quality_warning": image_quality.details.get("quality_warning"),
+                        "quality_mode": image_quality.details.get("quality_gate_mode"),
                         "quality_details": image_quality.details,
                         "timings": timings,
                     }
                 )
                 continue
 
+            timings["detect_ms"] = per_image_detect_ms
+            timings["detect_batch_ms_total"] = detect_batch_ms
+            fast_faces = eligible_fast_faces_by_index.get(idx, [])
             results.append(
                 self._prepare_face_from_detection(image, image_quality, fast_faces, timings)
             )
 
         return results
+
     def process(self, image_bytes: bytes) -> Dict[str, Any]:
         prepared = self.prepare_face_input(image_bytes)
         if prepared["status"] != "ok":

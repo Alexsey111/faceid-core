@@ -12,7 +12,10 @@ ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT_DIR not in sys.path:
     sys.path.insert(0, ROOT_DIR)
 
-from app.models import Embedding, User, VerificationJob, VerificationLog  # noqa: F401,E402
+from app.models.embedding import Embedding  # noqa: F401,E402
+from app.models.user import User  # noqa: F401,E402
+from app.models.verification_job import VerificationJob  # noqa: F401,E402
+from app.models.verification_log import VerificationLog  # noqa: F401,E402
 from app.db.base import Base  # noqa: E402
 
 config = context.config

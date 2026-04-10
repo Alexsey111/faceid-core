@@ -51,20 +51,15 @@ async def get_job_from_redis(job_id: str) -> dict | None:
 
 @router.get("/jobs/{job_id}")
 async def get_job_status(job_id: str):
-
     result = VerifyResultStore.get(job_id)
 
     if not result:
         return {
             "job_id": job_id,
-            "status": "not_found"
+            "status": "not_found",
         }
 
-    return {
-        "job_id": job_id,
-        **_extract_async_job_metrics(result),
-        **result
-    }
+    return {"job_id": job_id, **result}
 
 
 @router.get("/jobs/{job_id}/stream")

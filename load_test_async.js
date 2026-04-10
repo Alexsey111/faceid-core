@@ -1,31 +1,55 @@
 import http from "k6/http";
 import { check, sleep } from "k6";
 import { Counter, Trend, Rate } from "k6/metrics";
+import encoding from "k6/encoding";
 
 const completed = new Counter("completed");
 const waitTimeouts = new Counter("wait_timeouts");
 const completionFailed = new Rate("completion_failed");
 const totalE2E = new Trend("client_e2e_ms");
+const clientIteration = new Trend("client_iteration_ms");
 const queueDelay = new Trend("queue_delay_ms");
 const processingTime = new Trend("processing_time_ms");
 const completedEventually = new Rate("completed_eventually");
 const resultPasses = new Counter("result_passes");
 const resultFails = new Counter("result_fails");
+const enqueueAccepted = new Counter("enqueue_accepted");
+const enqueue429 = new Counter("enqueue_429");
+const terminalDone = new Counter("terminal_done");
+const terminalError = new Counter("terminal_error");
+const terminalExpired = new Counter("terminal_expired");
+const nonTerminalWait = new Counter("non_terminal_wait");
+const waitBadStatus = new Counter("wait_bad_status");
 
 const BASE_URL = __ENV.BASE_URL || "http://localhost:8080";
 const RATE = Number(__ENV.RATE || 20);
 const DURATION = __ENV.DURATION || "2m";
-const WAIT_TIMEOUT_MS = Number(__ENV.WAIT_TIMEOUT_MS || 2000);
+const RAW_WAIT_TIMEOUT_MS = Number(__ENV.WAIT_TIMEOUT_MS || 30000);
+const WAIT_TIMEOUT_MS = RAW_WAIT_TIMEOUT_MS;
+if (WAIT_TIMEOUT_MS > 30000) {
+  throw new Error(
+    `WAIT_TIMEOUT_MS=${WAIT_TIMEOUT_MS} exceeds /jobs/{id}/wait max timeout=30000`,
+  );
+}
 const PRE_ALLOCATED_VUS = Number(__ENV.PRE_ALLOCATED_VUS || __ENV.PREALLOCATED_VUS || 250);
 const MAX_VUS = Number(__ENV.MAX_VUS || 500);
 const ITERATION_PAUSE = Number(__ENV.PAUSE || 0);
 const REQUEST_TIMEOUT = __ENV.REQUEST_TIMEOUT || "30s";
 
+function loadImageBase64(path) {
+  if (path.endsWith(".b64.txt")) {
+    return open(path).replace(/^\uFEFF/, "").trim();
+  }
+
+  return encoding.b64encode(open(path, "b"));
+}
+
 const IMAGE_B64 = __ENV.IMAGE_B64
   ? __ENV.IMAGE_B64
   : __ENV.IMAGE_FILE
-    ? open(__ENV.IMAGE_FILE).trim()
+    ? loadImageBase64(__ENV.IMAGE_FILE)
     : open("./tests/data/person1_small.b64.txt").trim();
+const REQUIRE_LIVENESS = (__ENV.REQUIRE_LIVENESS || "false") === "true";
 
 export const options = {
   scenarios: {
@@ -48,7 +72,7 @@ function payload() {
   return JSON.stringify({
     user_id: "ext_test_user",
     image_b64: IMAGE_B64,
-    require_liveness: false,
+    require_liveness: REQUIRE_LIVENESS,
   });
 }
 
@@ -85,16 +109,21 @@ export default function () {
     if (__ITER < 3) {
       console.error(`bad status=${enqueueRes.status} body=${String(enqueueRes.body).slice(0, 500)}`);
     }
+    clientIteration.add(Date.now() - start);
     completionFailed.add(1);
     resultFails.add(1);
     return;
   }
 
   if (enqueueRes.status === 429) {
+    enqueue429.add(1);
+    clientIteration.add(Date.now() - start);
     completionFailed.add(0);
     resultFails.add(1);
     return;
   }
+
+  enqueueAccepted.add(1);
 
   let body = null;
   try {
@@ -103,6 +132,7 @@ export default function () {
     if (__ITER < 3) {
       console.error(`bad json body=${String(enqueueRes.body).slice(0, 500)}`);
     }
+    clientIteration.add(Date.now() - start);
     completionFailed.add(1);
     resultFails.add(1);
     return;
@@ -110,6 +140,7 @@ export default function () {
 
   const jobId = body?.job_id;
   if (!jobId) {
+    clientIteration.add(Date.now() - start);
     completionFailed.add(1);
     resultFails.add(1);
     return;
@@ -122,6 +153,22 @@ export default function () {
   check(waitRes, {
     "wait status 200": (r) => r.status === 200,
   });
+
+  if (waitRes.status !== 200) {
+    waitBadStatus.add(1);
+
+    if (__ITER < 3) {
+      console.error(
+        `wait bad status=${waitRes.status} body=${String(waitRes.body).slice(0, 500)}`
+      );
+    }
+
+    clientIteration.add(Date.now() - start);
+    completedEventually.add(0);
+    completionFailed.add(1);
+    resultFails.add(1);
+    return;
+  }
 
   let json = null;
   try {
@@ -165,12 +212,22 @@ export default function () {
     completedEventually.add(1);
     resultPasses.add(1);
     completionFailed.add(0);
+    if (status === "done") {
+      terminalDone.add(1);
+    } else if (status === "error" || status === "failed") {
+      terminalError.add(1);
+    } else if (status === "expired") {
+      terminalExpired.add(1);
+    }
   } else {
     waitTimeouts.add(1);
+    nonTerminalWait.add(1);
     completedEventually.add(0);
     resultFails.add(1);
     completionFailed.add(1);
   }
+
+  clientIteration.add(Date.now() - start);
 
   if (ITERATION_PAUSE > 0) {
     sleep(ITERATION_PAUSE);

@@ -32,6 +32,7 @@ from app.monitoring.metrics import (
     VERIFY_ASYNC_RESPONSE_BUILD_MS,
     VERIFY_ASYNC_ROUTE_MS,
 )
+from app.services.anti_replay_service import AntiReplayService
 from app.services.verify_job_queue import VerifyJobQueue
 
 router = APIRouter()
@@ -109,6 +110,7 @@ async def verify_async(http_request: Request):
                     detail={"error": "invalid_image_b64"},
                 )
 
+        image_hash = AntiReplayService.compute_hash(image_bytes)
         VERIFY_ASYNC_IMAGE_BYTES.observe(len(image_bytes))
 
         with observe_ms(VERIFY_ASYNC_IMAGE_DECODE_MS):
@@ -152,6 +154,7 @@ async def verify_async(http_request: Request):
 
         enqueue_payload = {
             "image_b64": normalized_b64,
+            "image_hash": image_hash,
             "user_id": payload.user_id,
             "require_liveness": payload.require_liveness,
         }

@@ -28,7 +28,20 @@ from app.services.search_service import SearchService
 from app.services.verification_service import VerificationService
 from app.services.backpressure import QUEUE_DELAY_MS_KEY
 try:
-    from app.monitoring.metrics import QUEUE_DELAY_MS, PIPELINE_MS, DETECT_MS, ENCODE_MS, LIVENESS_MS, LIVENESS_FAIL_COUNT
+    from app.monitoring.metrics import (
+        QUEUE_DELAY_MS,
+        JOB_AGE_MS,
+        PIPELINE_MS,
+        PIPELINE_STAGE_DURATION,
+        PREPROCESS_MS,
+        ALIGN_CROP_MS,
+        DETECT_MS,
+        ENCODE_MS,
+        VECTOR_SEARCH_MS,
+        RESULT_WRITE_MS,
+        LIVENESS_MS,
+        LIVENESS_FAIL_COUNT,
+    )
     METRICS_ENABLED = True
 except Exception:
     METRICS_ENABLED = False
@@ -112,6 +125,17 @@ def _store_queue_delay_ms(queue_delay_ms: float) -> None:
         pass
 
 
+def _observe_worker_stage(stage: str, duration_ms: float) -> None:
+    if not METRICS_ENABLED or duration_ms <= 0:
+        return
+
+    try:
+        # PIPELINE_STAGE_DURATION хранится в секундах
+        PIPELINE_STAGE_DURATION.labels(stage=stage).observe(float(duration_ms) / 1000.0)
+    except Exception:
+        pass
+
+
 def _observe_worker_pipeline_metrics(timings: dict) -> None:
     if not METRICS_ENABLED:
         return
@@ -119,6 +143,12 @@ def _observe_worker_pipeline_metrics(timings: dict) -> None:
     try:
         if "total_pipeline_ms" in timings:
             PIPELINE_MS.observe(float(timings["total_pipeline_ms"]))
+        if "preprocess_ms" in timings:
+            PREPROCESS_MS.observe(float(timings["preprocess_ms"]))
+            _observe_worker_stage("preprocess", float(timings["preprocess_ms"]))
+        if "align_crop_ms" in timings:
+            ALIGN_CROP_MS.observe(float(timings["align_crop_ms"]))
+            _observe_worker_stage("align_crop", float(timings["align_crop_ms"]))
         detect_ms = 0.0
         if "detect_ms" in timings:
             detect_ms = float(timings["detect_ms"])
@@ -127,10 +157,24 @@ def _observe_worker_pipeline_metrics(timings: dict) -> None:
             detect_ms += float(timings.get("fallback_detect_ms", 0.0))
         if detect_ms > 0.0:
             DETECT_MS.observe(detect_ms)
+            _observe_worker_stage("detect", detect_ms)
         if "encode_ms" in timings:
-            ENCODE_MS.observe(float(timings["encode_ms"]))
+            encode_ms = float(timings["encode_ms"])
+            ENCODE_MS.observe(encode_ms)
+            _observe_worker_stage("encode", encode_ms)
         if "liveness_ms" in timings:
             LIVENESS_MS.observe(float(timings["liveness_ms"]))
+    except Exception:
+        pass
+
+
+def _observe_result_write(duration_ms: float) -> None:
+    if not METRICS_ENABLED:
+        return
+
+    try:
+        RESULT_WRITE_MS.observe(float(duration_ms))
+        _observe_worker_stage("result_write", float(duration_ms))
     except Exception:
         pass
 
@@ -201,6 +245,12 @@ async def _process_verify_job(
             created_at = getattr(job, "created_at", None)
             if created_at is not None:
                 queue_wait_ms = max(0.0, (time.time() - created_at.timestamp()) * 1000)
+                if METRICS_ENABLED:
+                    try:
+                        JOB_AGE_MS.observe(float(queue_wait_ms))
+                        _observe_worker_stage("dequeue_job_age", float(queue_wait_ms))
+                    except Exception:
+                        pass
 
             if job.status in (JobStatus.done, JobStatus.failed):
                 return

@@ -25,6 +25,16 @@ class Settings(BaseSettings):
             return v.lower() not in ("false", "0", "no", "release")
         return bool(v)
 
+    @field_validator("QUALITY_GATE_MODE", mode="before")
+    @classmethod
+    def parse_quality_gate_mode(cls, v):
+        if v is None:
+            return "hard"
+        value = str(v).strip().lower()
+        if value not in {"hard", "soft", "off"}:
+            raise ValueError("QUALITY_GATE_MODE must be one of: hard, soft, off")
+        return value
+
     # -------------------------
     # PostgreSQL
     # -------------------------
@@ -75,6 +85,18 @@ class Settings(BaseSettings):
     # Face verification thresholds
     # -------------------------
     PREPROCESS_MAX_SIDE: int = 480
+    # -------------------------
+    # Quality gate
+    # -------------------------
+    QUALITY_GATE_MODE: str = "hard"  # hard | soft | off
+    QUALITY_MIN_IMAGE_SIDE: int = 160
+    QUALITY_MIN_BLUR_SCORE: float = 45.0
+    QUALITY_MIN_BRIGHTNESS: float = 35.0
+    QUALITY_MAX_BRIGHTNESS: float = 225.0
+    QUALITY_MIN_CONTRAST: float = 18.0
+    QUALITY_MIN_FACE_SIDE: int = 72
+    QUALITY_MAX_EYE_LINE_DIFF_RATIO: float = 0.12
+    QUALITY_MAX_NOSE_OFFSET_RATIO: float = 0.18
     RETINA_DET_SIZE: int = 512
     RETINA_DET_SIZE_SMALL: int = 320
     USE_PIPELINE_V2: bool = True

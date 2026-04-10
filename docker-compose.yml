@@ -19,16 +19,16 @@ x-worker-base: &worker-base
     - CELERY_RESULT_BACKEND=redis://redis:6379/0
     - CELERYD_PREFETCH_MULTIPLIER=1
     - WORKER_COUNT=8
-    - WORKER_SEMAPHORE=${WORKER_SEMAPHORE:-2}
+    - WORKER_SEMAPHORE=${WORKER_SEMAPHORE:-1}
     - ASYNC_THROUGHPUT_PER_SEC=1000
     - BACKPRESSURE_MAX_QUEUE_DELAY_MS=750
     - EMBED_BATCH_ENABLED=true
-    - EMBED_BATCH_SIZE=8
+    - EMBED_BATCH_SIZE=2
     - EMBED_BATCH_TIMEOUT_MS=10
     - EMBED_BATCH_MAX_WAIT_GUARD_MS=50
     - LIVENESS_ENABLED=false
     - FAISS_ENABLED=false
-    - ONNX_INTRA_OP_THREADS=2
+    - ONNX_INTRA_OP_THREADS=1
     - ONNX_INTER_OP_THREADS=1
     - MINIO_ENDPOINT=minio:9000
     - MINIO_ACCESS_KEY=minioadmin
@@ -51,7 +51,7 @@ services:
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: faceid
     ports:
-      - "15432:5432"
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -68,7 +68,7 @@ services:
       POSTGRES_DB: postgres
       POSTGRES_HOST_AUTH_METHOD: trust
     ports:
-      - "15433:5432"
+      - "5433:5432"
     volumes:
       - postgres_test_data:/var/lib/postgresql/data
     healthcheck:
@@ -100,8 +100,11 @@ services:
     build:
       context: .
       dockerfile: faceid-core/infrastructure/docker/api.Dockerfile
+    restart: unless-stopped
     ports:
       - "8000:8000"
+    expose:
+      - "8000"
     environment:
       - ENV=dev
       - APP_ROLE=api
@@ -114,17 +117,22 @@ services:
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - CELERYD_PREFETCH_MULTIPLIER=1
       - WORKER_COUNT=8
-      - WORKER_SEMAPHORE=${WORKER_SEMAPHORE:-2}
+      - WORKER_SEMAPHORE=${WORKER_SEMAPHORE:-1}
       - ASYNC_THROUGHPUT_PER_SEC=1000
       - BACKPRESSURE_MAX_QUEUE_DELAY_MS=750
       - EMBED_BATCH_ENABLED=true
-      - EMBED_BATCH_SIZE=8
+      - EMBED_BATCH_SIZE=2
       - EMBED_BATCH_TIMEOUT_MS=10
       - EMBED_BATCH_MAX_WAIT_GUARD_MS=50
       - LIVENESS_ENABLED=false
       - FAISS_ENABLED=false
-      - ONNX_INTRA_OP_THREADS=2
+      - ONNX_INTRA_OP_THREADS=1
       - ONNX_INTER_OP_THREADS=1
+      # Diagnostic series: soft gate
+      - QUALITY_GATE_MODE=soft
+      - QUALITY_MIN_FACE_SIDE=48
+      - QUALITY_MIN_BLUR_SCORE=25
+      - QUALITY_MIN_CONTRAST=10
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
@@ -142,11 +150,23 @@ services:
         hard: 65536
     volumes:
       - prometheus_multiproc:/tmp/prometheus
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=2).read()\"",
+        ]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
 
   api_lb:
     image: nginx:1.27-alpine
+    restart: unless-stopped
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     ports:
       - "8080:80"
     volumes:
@@ -156,6 +176,8 @@ services:
     build:
       context: .
       dockerfile: faceid-core/infrastructure/docker/api.Dockerfile
+    profiles:
+      - disabled
     cpus: "2.0"
     deploy:
       resources:
@@ -165,7 +187,7 @@ services:
       - ENV=dev
       - APP_ROLE=fast_worker
       - MODELS_DIR=/app/models
-      - WORKER_SEMAPHORE=${WORKER_SEMAPHORE:-2}
+      - WORKER_SEMAPHORE=${WORKER_SEMAPHORE:-1}
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
       - REDIS_URL=redis://redis:6379/0
       - REDIS_HOST=redis
@@ -177,12 +199,12 @@ services:
       - ASYNC_THROUGHPUT_PER_SEC=1000
       - BACKPRESSURE_MAX_QUEUE_DELAY_MS=750
       - EMBED_BATCH_ENABLED=true
-      - EMBED_BATCH_SIZE=8
+      - EMBED_BATCH_SIZE=2
       - EMBED_BATCH_TIMEOUT_MS=10
       - EMBED_BATCH_MAX_WAIT_GUARD_MS=50
       - LIVENESS_ENABLED=false
       - FAISS_ENABLED=false
-      - ONNX_INTRA_OP_THREADS=2
+      - ONNX_INTRA_OP_THREADS=1
       - ONNX_INTER_OP_THREADS=1
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=minioadmin
@@ -193,7 +215,7 @@ services:
       - EMBED_BATCH_ENABLED=false
       - FAST_WORKER_MAX_CONCURRENCY=1
       - LIVENESS_ENABLED=false
-      - ONNX_INTRA_OP_THREADS=2
+      - ONNX_INTRA_OP_THREADS=1
       - ONNX_INTER_OP_THREADS=1
     depends_on:
       postgres:
@@ -223,15 +245,23 @@ services:
     environment:
       - ENV=dev
       - MODELS_DIR=/app/models
-      - WORKER_SEMAPHORE=2
+      - WORKER_SEMAPHORE=1
       - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/faceid}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
       - REDIS_HOST=${REDIS_HOST:-redis}
       - PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
       - LIVENESS_ENABLED=false
-      - ONNX_INTRA_OP_THREADS=2
+      - ONNX_INTRA_OP_THREADS=1
       - ONNX_INTER_OP_THREADS=1
-      - BATCH_SIZE=8
+      - OMP_NUM_THREADS=1
+      - OPENBLAS_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+      # Diagnostic series: soft gate
+      - QUALITY_GATE_MODE=soft
+      - QUALITY_MIN_FACE_SIDE=48
+      - QUALITY_MIN_BLUR_SCORE=25
+      - QUALITY_MIN_CONTRAST=10
+      - BATCH_SIZE=2
       - BATCH_COLLECT_TIMEOUT=0.008
     command: python -m app.workers.verify_worker
     depends_on:
@@ -244,6 +274,8 @@ services:
     build:
       context: .
       dockerfile: faceid-core/infrastructure/docker/worker.Dockerfile
+    profiles:
+      - disabled
     cpus: "2.0"
     deploy:
       resources:
@@ -257,8 +289,11 @@ services:
       - REDIS_HOST=${REDIS_HOST:-redis}
       - PROMETHEUS_MULTIPROC_DIR=/tmp/prometheus
       - LIVENESS_ENABLED=false
-      - ONNX_INTRA_OP_THREADS=2
+      - ONNX_INTRA_OP_THREADS=1
       - ONNX_INTER_OP_THREADS=1
+      - OMP_NUM_THREADS=1
+      - OPENBLAS_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
     command: python -m app.workers.verify_worker
     ports:
       - "9103:9101"
@@ -270,6 +305,8 @@ services:
 
   worker_fast:
     <<: *worker-base
+    profiles:
+      - disabled
     cpus: "2.0"
     ports:
       - "9101:9100"
@@ -277,6 +314,8 @@ services:
 
   worker_heavy:
     <<: *worker-base
+    profiles:
+      - disabled
     cpus: "2.0"
     ports:
       - "9102:9100"
@@ -293,6 +332,8 @@ services:
     build:
       context: .
       dockerfile: faceid-core/infrastructure/docker/autoscaler.Dockerfile
+    profiles:
+      - disabled
     command: python autoscaler/autoscaler.py
     network_mode: "host"
     depends_on:

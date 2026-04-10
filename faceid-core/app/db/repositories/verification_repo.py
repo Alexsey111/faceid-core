@@ -1,16 +1,13 @@
-# verification_repo.py - Репозиторий логов верификации
-
 from typing import Optional
+
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 
 from app.models.verification_log import VerificationLog
-from app.models.user import User
 from app.monitoring.db_metrics import timed_db_call
 
 
 class VerificationRepository:
-
     def __init__(self, db: AsyncSession):
         self.db = db
 
@@ -24,29 +21,7 @@ class VerificationRepository:
         is_genuine: bool | None = None,
         commit: bool = True,
     ) -> Optional[VerificationLog]:
-        """
-        Create a verification log entry.
-
-        Args:
-            user_id: Matched user ID
-            similarity: Cosine similarity score
-            success: Whether verification was successful
-            margin: Difference between top-1 and top-2 similarity
-            liveness_score: Liveness detection score
-            is_genuine: Whether matched user matches expected user
-        """
-        # Skip if user_id is None or doesn't exist in users table
         if user_id is None:
-            return None
-
-        # Check if user exists
-        result = await timed_db_call(
-            self.db.execute(select(User).where(User.id == user_id)),
-            "verification_repo.user_exists",
-        )
-        user = result.scalar_one_or_none()
-        if not user:
-            # User doesn't exist, skip logging
             return None
 
         record = VerificationLog(
@@ -55,12 +30,23 @@ class VerificationRepository:
             margin=margin,
             liveness_score=liveness_score,
             is_genuine=is_genuine,
-            result=success
+            result=success,
         )
 
         self.db.add(record)
-        await self.db.flush()
-        if commit:
-            await self.db.commit()
+
+        try:
+            await timed_db_call(
+                self.db.flush(),
+                "verification_repo.create_log.flush",
+            )
+            if commit:
+                await timed_db_call(
+                    self.db.commit(),
+                    "verification_repo.create_log.commit",
+                )
+        except IntegrityError:
+            await self.db.rollback()
+            return None
 
         return record

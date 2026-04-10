@@ -28,11 +28,15 @@ try:
         QUALITY_REJECT_COUNTER,
         QUALITY_GATE_PRE_MS,
         QUALITY_GATE_FACE_MS,
+        PREPROCESS_MS,
+        ALIGN_CROP_MS,
         LIVENESS_MS,
         PIPELINE_STAGE_DURATION,
         PIPELINE_MS,
         DETECT_MS,
         ENCODE_MS,
+        VECTOR_SEARCH_MS,
+        RESULT_WRITE_MS,
     )
     METRICS_ENABLED = True
 except Exception:
@@ -61,7 +65,7 @@ def _log_extra(job_id: Optional[str], **fields: Any) -> dict[str, Any]:
 def _observe_stage(stage: str, duration_ms: float) -> None:
     if METRICS_ENABLED:
         try:
-            PIPELINE_STAGE_DURATION.labels(stage=stage).observe(duration_ms)
+            PIPELINE_STAGE_DURATION.labels(stage=stage).observe(duration_ms / 1000.0)
         except Exception:
             pass
 
@@ -73,6 +77,10 @@ def _observe_pipeline_metrics(pipeline_time: dict[str, Any]) -> None:
     try:
         if "total_pipeline_ms" in pipeline_time:
             PIPELINE_MS.observe(float(pipeline_time["total_pipeline_ms"]))
+        if "preprocess_ms" in pipeline_time:
+            PREPROCESS_MS.observe(float(pipeline_time["preprocess_ms"]))
+        if "align_crop_ms" in pipeline_time:
+            ALIGN_CROP_MS.observe(float(pipeline_time["align_crop_ms"]))
         detect_ms = 0.0
         if "detect_ms" in pipeline_time:
             detect_ms = float(pipeline_time["detect_ms"])
@@ -92,8 +100,8 @@ def _observe_pipeline_metrics(pipeline_time: dict[str, Any]) -> None:
 def _observe_verify_latency(start_time: float) -> None:
     if METRICS_ENABLED:
         try:
-            latency = (time.time() - start_time) * 1000
-            VERIFY_LATENCY.observe(latency)
+            latency_seconds = time.time() - start_time
+            VERIFY_LATENCY.observe(latency_seconds)
         except Exception:
             pass
 
@@ -358,11 +366,14 @@ class VerificationService:
         job_id: Optional[str] = None,
         t_start: float | None = None,
         top_k: list[dict[str, Any]] | None = None,
+        image_hash: str | None = None,
     ) -> Dict[str, Any]:
         if self.embedding_repo is None:
             raise RuntimeError("EmbeddingRepository is required for verify_face")
 
         t_start = time.time() if t_start is None else t_start
+        pipeline_time = dict(features.get("timings", {}))
+        features["timings"] = pipeline_time
 
         verification_repo = self.verification_repo
         if verification_repo is None:
@@ -385,9 +396,14 @@ class VerificationService:
 
         # ANTI-REPLAY CHECK (just a signal, don't block)
         replay_detected = False
+        anti_replay_ms = 0.0
         if check_replay:
+            t_replay = time.perf_counter()
             try:
-                replay_detected = not AntiReplayService.check(image_bytes)
+                if image_hash:
+                    replay_detected = not AntiReplayService.check_with_hash(image_hash)
+                else:
+                    replay_detected = not AntiReplayService.check(image_bytes)
             except Exception as exc:
                 logger.warning(
                     "anti_replay_unavailable job_id=%s error=%s",
@@ -395,6 +411,11 @@ class VerificationService:
                     exc,
                 )
                 replay_detected = False
+            finally:
+                anti_replay_ms = (time.perf_counter() - t_replay) * 1000.0
+                pipeline_time["anti_replay_ms"] = anti_replay_ms
+                if job_id is not None:
+                    _observe_stage("anti_replay", anti_replay_ms)
 
         async def _store_verification_log(
             *,
@@ -430,7 +451,36 @@ class VerificationService:
                 margin=margin,
                 liveness_score=liveness_score,
                 is_genuine=is_genuine,
+                commit=False,
             )
+
+        async def _store_verification_log_timed(
+            *,
+            user_id: int | None,
+            similarity: float,
+            success: bool,
+            margin: float | None = None,
+            liveness_score: float | None = None,
+            is_genuine: bool | None = None,
+            query_embedding: np.ndarray | None = None,
+            top1_user_id: int | None = None,
+        ) -> float:
+            t_write = time.perf_counter()
+            await _store_verification_log(
+                user_id=user_id,
+                similarity=similarity,
+                success=success,
+                margin=margin,
+                liveness_score=liveness_score,
+                is_genuine=is_genuine,
+                query_embedding=query_embedding,
+                top1_user_id=top1_user_id,
+            )
+            verification_log_write_ms = (time.perf_counter() - t_write) * 1000.0
+            pipeline_time["verification_log_write_ms"] = verification_log_write_ms
+            if job_id is not None:
+                _observe_stage("verification_log_write", verification_log_write_ms)
+            return verification_log_write_ms
 
         logger.info(
             "verify_started job_id=%s",
@@ -444,8 +494,9 @@ class VerificationService:
 
         if features.get("status") == "quality_reject":
             pipeline_time = features.get("timings", {})
+            reason = features.get("reason") or "quality_reject"
 
-            if job_id is not None:
+            if job_id is None:
                 _observe_pipeline_metrics(pipeline_time)
                 if "total_pipeline_ms" in pipeline_time:
                     _observe_stage("pipeline", float(pipeline_time["total_pipeline_ms"]))
@@ -454,7 +505,7 @@ class VerificationService:
                 if "quality_gate_face_ms" in pipeline_time:
                     _observe_stage("quality_gate_face", float(pipeline_time["quality_gate_face_ms"]))
 
-            await _store_verification_log(
+            await _store_verification_log_timed(
                 user_id=user_id_int,
                 similarity=0.0,
                 success=False,
@@ -464,7 +515,6 @@ class VerificationService:
             )
             if METRICS_ENABLED:
                 try:
-                    reason = features.get("reason") or "unknown"
                     QUALITY_REJECT_COUNTER.labels(reason=reason).inc()
                     if "quality_gate_pre_ms" in pipeline_time:
                         QUALITY_GATE_PRE_MS.observe(
@@ -490,13 +540,14 @@ class VerificationService:
                 "replay_detected": replay_detected,
                 "bbox": features.get("bbox"),
                 "bbox_source": features.get("bbox_source"),
+                "timings": pipeline_time,
             }
 
         if features.get("status") == "spoof":
             liveness_score = float(features.get("liveness_score", 0.0) or 0.0)
             liveness_risk = "spoof"
 
-            await _store_verification_log(
+            await _store_verification_log_timed(
                 user_id=user_id_int,
                 similarity=0.0,
                 success=False,
@@ -519,20 +570,24 @@ class VerificationService:
                 "replay_detected": replay_detected,
                 "bbox": features.get("bbox"),
                 "bbox_source": features.get("bbox_source"),
+                "timings": pipeline_time,
             }
 
         embedding = features["embedding"]
-        pipeline_time = features.get("timings", {})
 
-        if job_id is not None:
+        if job_id is None:
             _observe_pipeline_metrics(pipeline_time)
 
             if "total_pipeline_ms" in pipeline_time:
                 _observe_stage("pipeline", float(pipeline_time["total_pipeline_ms"]))
+            if "preprocess_ms" in pipeline_time:
+                _observe_stage("preprocess", float(pipeline_time["preprocess_ms"]))
             if "detect_ms" in pipeline_time:
                 _observe_stage("detect", float(pipeline_time["detect_ms"]))
+            if "align_crop_ms" in pipeline_time:
+                _observe_stage("align_crop", float(pipeline_time["align_crop_ms"]))
             if "encode_ms" in pipeline_time:
-                _observe_stage("embed", float(pipeline_time["encode_ms"]))
+                _observe_stage("encode", float(pipeline_time["encode_ms"]))
             if "liveness_ms" in pipeline_time:
                 _observe_stage("liveness", float(pipeline_time["liveness_ms"]))
 
@@ -572,7 +627,7 @@ class VerificationService:
             liveness_passed = LivenessService.is_passed(liveness_signals)
         if require_liveness and not liveness_passed:
 
-            await _store_verification_log(
+            await _store_verification_log_timed(
                 user_id=user_id_int,
                 similarity=0.0,
                 success=False,
@@ -595,6 +650,7 @@ class VerificationService:
                 "replay_detected": replay_detected,
                 "bbox": features.get("bbox"),
                 "bbox_source": features.get("bbox_source"),
+                "timings": pipeline_time,
             }
 
         # VECTOR SEARCH (top-2 for margin calculation)
@@ -602,6 +658,14 @@ class VerificationService:
             t0 = time.time()
             top_k = await search_service.search_top_k(embedding, k=2)
             search_time = (time.time() - t0) * 1000
+            pipeline_time["vector_search_ms"] = search_time
+            if job_id is not None:
+                _observe_stage("vector_search", search_time)
+                if METRICS_ENABLED:
+                    try:
+                        VECTOR_SEARCH_MS.observe(search_time)
+                    except Exception:
+                        pass
             _observe_stage("search", search_time)
         else:
             search_time = 0.0
@@ -627,19 +691,29 @@ class VerificationService:
         # Check if matches requested user_id (by external_id)
         is_genuine: bool | None = None
         if user_id:
+            t_is_genuine = time.perf_counter()
             is_genuine = await _resolve_is_genuine(
                 embedding_repo.db,
                 expected_external_user_id=user_id,
                 query_embedding=embedding,
                 top1_user_id=matched_user_id,
             )
+            is_genuine_ms = (time.perf_counter() - t_is_genuine) * 1000.0
+            pipeline_time["is_genuine_ms"] = is_genuine_ms
+            if job_id is not None:
+                _observe_stage("is_genuine", is_genuine_ms)
 
+        t_decision = time.perf_counter()
         decision = self.make_decision(embedding, top_k, liveness_signals, user_id=user_id)
+        decision_ms = (time.perf_counter() - t_decision) * 1000.0
+        pipeline_time["decision_ms"] = decision_ms
+        if job_id is not None:
+            _observe_stage("decision", decision_ms)
         decision_status = decision["status"]
         decision_similarity = float(decision.get("similarity", similarity))
         decision_user_id = decision.get("user_id", matched_user_id)
 
-        await _store_verification_log(
+        await _store_verification_log_timed(
             user_id=decision_user_id,
             similarity=decision_similarity,
             margin=margin,
@@ -691,6 +765,16 @@ class VerificationService:
         _record_liveness_result(liveness_passed)
         _observe_verify_latency(t_start)
 
+        logger.warning(
+            "verify_service_times job_id=%s anti_replay_ms=%.3f is_genuine_ms=%.3f decision_ms=%.3f verification_log_write_ms=%.3f search_ms=%.3f",
+            job_id,
+            float(pipeline_time.get("anti_replay_ms", 0.0)),
+            float(pipeline_time.get("is_genuine_ms", 0.0)),
+            float(pipeline_time.get("decision_ms", 0.0)),
+            float(pipeline_time.get("verification_log_write_ms", 0.0)),
+            float(pipeline_time.get("vector_search_ms", 0.0)),
+        )
+
         return {
             "status": decision_status,
             "user_id": decision_user_id if decision_status == "match" else None,
@@ -700,6 +784,7 @@ class VerificationService:
             "replay_detected": replay_detected,
             "bbox": features.get("bbox"),
             "bbox_source": features.get("bbox_source"),
+            "timings": pipeline_time,
         }
 
     async def verify_face_sync(self, image_bytes: bytes) -> dict:

@@ -9,6 +9,7 @@ from time import perf_counter
 
 from app.core.config import settings
 from app.monitoring.metrics import (
+    ASYNC_JOB_ENQUEUED_TOTAL,
     VERIFY_ACCEPTED_JOBS,
     VERIFY_INFLIGHT_CURRENT,
     QUEUE_LENGTH,
@@ -78,6 +79,7 @@ class VerifyJobQueue:
             redis_client.rpush(VerifyJobQueue.QUEUE_NAME, json.dumps(job))
             QUEUE_PUSH_LATENCY_MS.observe((perf_counter() - start) * 1000.0)
             VERIFY_ACCEPTED_JOBS.inc()
+            ASYNC_JOB_ENQUEUED_TOTAL.inc()
             start = perf_counter()
             queue_length = float(cast(int, redis_client.llen(VerifyJobQueue.QUEUE_NAME)))
             REDIS_COMMAND_LATENCY_MS.labels(command="llen_queue_post_push").observe(

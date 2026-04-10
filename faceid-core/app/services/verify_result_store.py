@@ -7,7 +7,7 @@ from time import perf_counter
 from typing import Any, Dict, Optional, cast
 
 from app.core.config import settings
-from app.monitoring.metrics import REDIS_COMMAND_LATENCY_MS
+from app.monitoring.metrics import ASYNC_JOB_TERMINAL_TOTAL, REDIS_COMMAND_LATENCY_MS
 
 REDIS_POOL = redis.ConnectionPool(
     host=settings.REDIS_HOST,
@@ -25,53 +25,62 @@ class VerifyResultStore:
     TTL = 300
 
     @staticmethod
-    def set_done(job_id: str, result: Dict[str, Any], metrics: Dict[str, Any]):
-        completed_at = metrics.get("finished_at", time.time())
+    def set_done(job_id: str, result: Dict[str, Any], metrics: Dict[str, Any] | None = None):
+        metrics = metrics or {}
         start = perf_counter()
+        ASYNC_JOB_TERMINAL_TOTAL.labels(status="done").inc()
+        payload: dict[str, Any] = {
+            "status": "done",
+            "result": result,
+        }
+        if metrics:
+            payload["metrics"] = metrics
+            payload["completed_at"] = metrics.get("finished_at", time.time())
         redis_client.setex(
             f"job:{job_id}",
             VerifyResultStore.TTL,
-            json.dumps({
-                "status": "done",
-                "result": result,
-                "metrics": metrics,
-                "completed_at": completed_at,
-            })
+            json.dumps(payload)
         )
         REDIS_COMMAND_LATENCY_MS.labels(command="result_setex_done").observe(
             (perf_counter() - start) * 1000.0
         )
 
     @staticmethod
-    def set_error(job_id: str, error: str, metrics: Dict[str, Any]):
-        completed_at = metrics.get("finished_at", time.time())
+    def set_error(job_id: str, error: str, metrics: Dict[str, Any] | None = None):
+        metrics = metrics or {}
         start = perf_counter()
+        ASYNC_JOB_TERMINAL_TOTAL.labels(status="error").inc()
+        payload: dict[str, Any] = {
+            "status": "error",
+            "error": error,
+        }
+        if metrics:
+            payload["metrics"] = metrics
+            payload["completed_at"] = metrics.get("finished_at", time.time())
         redis_client.setex(
             f"job:{job_id}",
             VerifyResultStore.TTL,
-            json.dumps({
-                "status": "error",
-                "error": error,
-                "metrics": metrics,
-                "completed_at": completed_at,
-            })
+            json.dumps(payload)
         )
         REDIS_COMMAND_LATENCY_MS.labels(command="result_setex_error").observe(
             (perf_counter() - start) * 1000.0
         )
 
     @staticmethod
-    def set_expired(job_id: str, metrics: Dict[str, Any]):
-        completed_at = metrics.get("finished_at", time.time())
+    def set_expired(job_id: str, metrics: Dict[str, Any] | None = None):
+        metrics = metrics or {}
         start = perf_counter()
+        ASYNC_JOB_TERMINAL_TOTAL.labels(status="expired").inc()
+        payload: dict[str, Any] = {
+            "status": "expired",
+        }
+        if metrics:
+            payload["metrics"] = metrics
+            payload["completed_at"] = metrics.get("finished_at", time.time())
         redis_client.setex(
             f"job:{job_id}",
             VerifyResultStore.TTL,
-            json.dumps({
-                "status": "expired",
-                "metrics": metrics,
-                "completed_at": completed_at,
-            })
+            json.dumps(payload)
         )
         REDIS_COMMAND_LATENCY_MS.labels(command="result_setex_expired").observe(
             (perf_counter() - start) * 1000.0
