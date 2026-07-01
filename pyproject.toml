@@ -35,8 +35,12 @@ dependencies = [
 ]
 
 [tool.pytest.ini_options]
-pythonpath = ["faceid-core"]
+pythonpath = ["."]
 testpaths = ["tests"]
+# importlib: не препендит test-директории в sys.path → нет затенения исходного
+# пакета `evaluation` тестовым tests/evaluation и нет конфликта одинаковых имён
+# тест-модулей (test_metrics.py в tests/ и tests/evaluation/).
+addopts = "--import-mode=importlib"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
@@ -45,11 +49,11 @@ markers = [
 ]
 
 [tool.pyright]
-include = ["faceid-core"]
+include = ["app", "evaluation", "autoscaler", "scripts"]
 exclude = ["**/__pycache__", "**/.*", "**/node_modules", "**/venv", "**/.venv", "**/temp_venv", "**/dist", "**/build", "**/*.egg-info"]
 pythonPath = "venv/Scripts/python.exe"
 typeCheckingMode = "basic"
-extraPaths = ["faceid-core"]
+extraPaths = ["."]
 
 [tool.ruff]
 line-length = 120

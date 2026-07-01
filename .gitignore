@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .vscode/
+.idea/
 *.pyc
 *.pyo
 *.pyd
@@ -13,9 +14,49 @@ build/
 .DS_Store
 *.egg-info/
 .env
+.coverage
 tests/data/
 tests/images/
-faceid-core/models/
-faceid-core/models_backup/
 models/
 models_backup/
+
+# P0 security artifacts
+# Self-signed dev TLS certs (см. infrastructure/nginx/generate_self_signed.sh)
+certs/
+# FAISS persist хранит plaintext-биометрию — не коммитим
+*.index
+faiss_meta.pkl
+faiss_meta.json
+
+# P1 evaluation harness: кеш эмбеддингов и отчёты (генерируются, не коммитятся)
+evaluation/cache/
+evaluation/out/
+
+# P2 liveness eval-harness: кеш предсказаний и отчёты
+evaluation/liveness/cache/
+evaluation/liveness/out/
+
+# Локальные eval-датасеты (скачиваются/генерируются локально, не в git)
+Face Data/
+Extracted Faces/
+Anti-Spoofing Dataset/
+
+# Benchmark outputs (capture_lb_capacity_curve и др. — генерируются локально)
+benchmarks/
+
+# Одноразовый шум нагрузочных тестов и профилировки в корне
+k6_*.json
+k6_*.txt
+k6_*.csv
+summary_*.json
+summary_*.txt
+cpu_samples_*.csv
+metrics_after_*.txt
+*.pid
+run_*_after_patch.ps1
+run_short_path_diag.ps1
+series_worker_since_*.log
+queue_*.log
+workers_*.log
+temp_upload_test.py
+test.json

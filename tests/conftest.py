@@ -3,7 +3,6 @@
 import asyncio
 import os
 import subprocess
-import sys
 
 import pytest
 import pytest_asyncio
@@ -11,9 +10,6 @@ import redis as redis_lib
 from sqlalchemy.ext.asyncio import create_async_engine
 
 ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-FACEID_DIR = os.path.join(ROOT_DIR, "faceid-core")
-if FACEID_DIR not in sys.path:
-    sys.path.insert(0, FACEID_DIR)
 
 os.environ["POSTGRES_HOST"] = "localhost"
 os.environ["REDIS_HOST"] = "localhost"
@@ -23,6 +19,9 @@ os.environ["MINIO_ENDPOINT"] = "localhost:9000"
 os.environ["MODELS_DIR"] = os.path.join(ROOT_DIR, "models")
 os.environ["USE_PIPELINE_V2"] = "false"
 os.environ["DATABASE_URL"] = "postgresql+asyncpg://postgres:postgres@localhost:5433/postgres"
+# Аутентификация отключена в тестах (тестируется отдельно в test_auth.py,
+# который поднимает AUTH_ENABLED=True в рамках своего fixture).
+os.environ["AUTH_ENABLED"] = "false"
 
 from app.core.config import settings
 
@@ -50,13 +49,32 @@ def event_loop():
     loop.close()
 
 
+def pytest_configure(config):
+    config.addinivalue_line("markers", "unit: pure unit test — no DB/Redis/infra required")
+
+
+def _all_unit(session) -> bool:
+    """True, если в текущем прогоне собраны только unit-тесты (маркер 'unit')."""
+    items = getattr(session, "items", None)
+    if not items:
+        return False
+    return all(item.get_closest_marker("unit") is not None for item in items)
+
+
 @pytest.fixture(scope="session", autouse=True)
-def run_migrations():
+def run_migrations(request):
+    # Прогон только unit-тестов не требует схемы БД — пропускаем alembic,
+    # чтобы юнит-тесты работали без поднятого Postgres.
+    if _all_unit(request.session):
+        return
     subprocess.run(["alembic", "upgrade", "head"], check=True, cwd=ROOT_DIR)
 
 
 @pytest.fixture(autouse=True)
-def reset_redis():
+def reset_redis(request):
+    if request.node.get_closest_marker("unit") is not None:
+        yield
+        return
     client = redis_lib.Redis(host="localhost", port=6379, db=0)
     client.flushdb()
     yield

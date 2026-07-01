@@ -1,7 +1,7 @@
 x-worker-base: &worker-base
   build:
     context: .
-    dockerfile: faceid-core/infrastructure/docker/worker.Dockerfile
+    dockerfile: infrastructure/docker/worker.Dockerfile
   deploy:
     resources:
       limits:
@@ -22,7 +22,7 @@ x-worker-base: &worker-base
     - LIVENESS_ENABLED=false
     - ONNX_INTRA_OP_THREADS=1
     - ONNX_INTER_OP_THREADS=1
-    - BATCH_SIZE=2
+    - BATCH_SIZE=${BATCH_SIZE:-2}
     - BATCH_COLLECT_TIMEOUT=0.008
     - MINIO_ENDPOINT=${MINIO_ENDPOINT:?set MINIO_ENDPOINT to node1 address:9000}
     - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}

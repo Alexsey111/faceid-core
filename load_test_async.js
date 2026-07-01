@@ -7,6 +7,8 @@ const completed = new Counter("completed");
 const waitTimeouts = new Counter("wait_timeouts");
 const completionFailed = new Rate("completion_failed");
 const totalE2E = new Trend("client_e2e_ms");
+const jobTotalServer = new Trend("job_total_server_ms");
+const pollOverhead = new Trend("poll_overhead_ms");
 const clientIteration = new Trend("client_iteration_ms");
 const queueDelay = new Trend("queue_delay_ms");
 const processingTime = new Trend("processing_time_ms");
@@ -194,8 +196,15 @@ export default function () {
     json?.async_job_queue_delay_ms ?? json?.metrics?.queue_delay ?? null;
   const processingTimeMs =
     json?.async_job_processing_ms ?? json?.metrics?.processing_time ?? null;
-  const totalLatencyMs =
+  const jobTotalServerMs =
+    json?.timings?.job_total_server_ms ??
     json?.async_job_total_latency_ms ?? json?.metrics?.total_latency ?? null;
+  const serverWaitMs = json?.server_wait_ms ?? null;
+  const waitLookupMs = json?.wait_lookup_ms ?? null;
+  const resultVisibleAgeMs = json?.result_visible_age_ms ?? null;
+  const waitEmptyCycles = json?.wait_empty_cycles ?? null;
+  const pollCycles = json?.poll_cycles ?? null;
+  const firstResultHit = json?.first_result_hit ?? null;
 
   if (typeof queueDelayMs === "number" && Number.isFinite(queueDelayMs)) {
     queueDelay.add(queueDelayMs);
@@ -203,11 +212,41 @@ export default function () {
   if (typeof processingTimeMs === "number" && Number.isFinite(processingTimeMs)) {
     processingTime.add(processingTimeMs);
   }
-  if (typeof totalLatencyMs === "number" && Number.isFinite(totalLatencyMs)) {
-    totalE2E.add(totalLatencyMs);
-  }
 
   if (completedAtMs !== null) {
+    totalE2E.add(completedAtMs);
+
+    if (typeof jobTotalServerMs === "number" && Number.isFinite(jobTotalServerMs)) {
+      jobTotalServer.add(jobTotalServerMs);
+      pollOverhead.add(Math.max(0, completedAtMs - jobTotalServerMs));
+    }
+
+    if (status === "done" && json?.timings && json?.timestamps) {
+      const jobRowTimings = {
+        ...(json.timings || {}),
+        client_terminal_e2e_ms: completedAtMs,
+        server_wait_ms: serverWaitMs,
+        wait_lookup_ms: waitLookupMs,
+        result_visible_age_ms: resultVisibleAgeMs,
+        wait_empty_cycles: waitEmptyCycles,
+        poll_cycles: pollCycles,
+        first_result_hit: firstResultHit,
+      };
+
+      if (typeof jobTotalServerMs === "number" && Number.isFinite(jobTotalServerMs)) {
+        jobRowTimings.poll_overhead_ms = Math.max(0, completedAtMs - jobTotalServerMs);
+      }
+
+      console.log(
+        "JOB_ROW " +
+          JSON.stringify({
+            job_id: jobId,
+            status: json.status,
+            timings: jobRowTimings,
+            timestamps: json.timestamps,
+          })
+      );
+    }
     completed.add(1);
     completedEventually.add(1);
     resultPasses.add(1);
