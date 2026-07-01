@@ -60,3 +60,7 @@ queue_*.log
 workers_*.log
 temp_upload_test.py
 test.json
+summary.json
+
+# Локальная инструкция ассистента (не публикуется)
+CLAUDE.md
