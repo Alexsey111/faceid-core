@@ -2,6 +2,7 @@ x-worker-base: &worker-base
   build:
     context: .
     dockerfile: infrastructure/docker/worker.Dockerfile
+  restart: unless-stopped
   deploy:
     resources:
       limits:
@@ -29,6 +30,18 @@ x-worker-base: &worker-base
     - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
   volumes:
     - prometheus_multiproc:/tmp/prometheus
+  healthcheck:
+    # Worker liveness-прокси: достижимость брокера Redis на node1.
+    # REDIS_URL здесь не задаётся (используется REDIS_HOST/PORT/DB) — собираем URL.
+    test:
+      [
+        "CMD-SHELL",
+        "python -c \"import os,redis;redis.from_url('redis://%s:%s/%s'%(os.environ['REDIS_HOST'],os.environ.get('REDIS_PORT','6379'),os.environ.get('REDIS_DB','0'))).ping()\" || exit 1",
+      ]
+    interval: 15s
+    timeout: 5s
+    retries: 5
+    start_period: 20s
 
 services:
   worker:
