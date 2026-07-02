@@ -13,7 +13,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, REGISTRY, 
 import cv2
 import numpy as np
 import sqlalchemy as sa
-from app.core.logging import setup_logging
+from app.core.logger import setup_logging
 from app.api.deps import require_auth
 from app.api.router import router
 from app.api.routes.health import router as health_router

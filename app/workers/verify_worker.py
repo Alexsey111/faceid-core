@@ -17,7 +17,7 @@ from app.core.timing import StageTimings, elapsed_ms, now_epoch_ns, now_perf_ns
 from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.db.repositories.verification_repo import VerificationRepository
 from app.core.config import settings
-from app.core.logging import setup_logging
+from app.core.logger import setup_logging
 from app.db.session import AsyncSessionLocal
 from app.infrastructure.minio_client import MinioClient
 from app.monitoring.metrics import (
