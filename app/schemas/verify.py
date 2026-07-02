@@ -9,6 +9,12 @@ class VerifyRequest(BaseModel):
     user_id: Optional[str] = None
     image: str
     require_liveness: bool = False
+    # Active challenge liveness (online access control):
+    #   liveness_mode="active" + liveness_token — proof из /liveness/challenge/stream.
+    #   При active token валидируется+consumes (single-use), passive не запускается,
+    #   ответ получает liveness_passed=True (active-proven).
+    liveness_mode: str = "passive"  # "passive" | "active"
+    liveness_token: Optional[str] = None
 
 
 class VerifyResponse(BaseModel):

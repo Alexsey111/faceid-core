@@ -85,6 +85,45 @@ def _normalize_priority(value: str | None) -> tuple[str, int]:
     return priority, 9 if priority == "high" else 0
 
 
+def _resolve_liveness(request: VerifyRequest) -> tuple[bool, bool]:
+    """Решить режим liveness для /verify.
+
+    Returns:
+        (effective_require_liveness, active_proven).
+
+    При liveness_mode="active": валидирует + consumes liveness_token (single-use,
+    403 при невалидном/просроченном), effective_require_liveness=False (passive
+    не запускается повторно — liveness уже доказан challenge-протоколом),
+    active_proven=True → ответ получит liveness_passed=True.
+    Иначе — request.require_liveness, active_proven=False.
+    """
+    mode = (request.liveness_mode or "passive").strip().lower()
+    if mode == "active":
+        from app.services.liveness_token import consume_liveness_token
+
+        if not consume_liveness_token(request.liveness_token):
+            raise HTTPException(
+                status_code=403, detail="invalid or expired liveness_token"
+            )
+        logger.info("active_liveness_verified token consumed")
+        return False, True
+    return request.require_liveness, False
+
+
+def _apply_active_liveness(result: Any, active_proven: bool) -> Any:
+    """При active-proven выставить liveness_passed=True в ответе (dict или модель)."""
+    if not active_proven:
+        return result
+    if isinstance(result, dict):
+        result["liveness_passed"] = True
+    elif hasattr(result, "liveness_passed"):
+        try:
+            result.liveness_passed = True
+        except Exception:
+            pass
+    return result
+
+
 def _pick_fast_worker_url() -> str:
     return settings.FAST_WORKER_URL
 
@@ -261,6 +300,9 @@ async def verify_base64(
 
     RateLimiter.check(http_request, "verify", limit=dynamic_limit)
 
+    # Active liveness: валидируем+consumes token ДО тяжёлой работы (single-use).
+    effective_require_liveness, active_proven = _resolve_liveness(request)
+
     image_bytes = base64.b64decode(request.image)
 
     if len(image_bytes) > MAX_IMAGE_SIZE:
@@ -295,10 +337,11 @@ async def verify_base64(
                         pipeline_result,
                         image_bytes=image_bytes,
                         user_id=request.user_id,
-                        require_liveness=request.require_liveness,
+                        require_liveness=effective_require_liveness,
                         check_replay=True,
                         t_start=t_start,
                     )
+                    result = _apply_active_liveness(result, active_proven)
                     _fire_sync_webhook(result)
                     return result
                 except Exception as exc:
@@ -330,7 +373,7 @@ async def verify_base64(
         object_name=object_name,
         content_type="image/jpeg",
         user_id=request.user_id,
-        require_liveness=request.require_liveness,
+        require_liveness=effective_require_liveness,
         priority="high",
     )
 
@@ -397,9 +440,14 @@ async def verify_async_base64(
     db: AsyncSession = Depends(get_db),
 ):
     """Async verify via queue/workers for real load."""
+    # Active liveness: валидируем+consumes token ДО backpressure-логики (single-use).
+    # NOTE: async-результат liveness_passed=True не выставляется воркером (active-proof
+    #已知 только роуту) — для онлайн-контроля доступа используется sync fast-path.
+    effective_require_liveness, active_proven = _resolve_liveness(request)
+
     queue_delay = get_system_load()
     mode = get_backpressure_mode(queue_delay)
-    require_liveness = request.require_liveness
+    require_liveness = effective_require_liveness
     inflight = current_active_requests()
     dynamic_limit = get_inflight_limit(queue_delay)
 

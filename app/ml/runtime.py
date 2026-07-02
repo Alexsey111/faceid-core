@@ -139,3 +139,46 @@ def get_liveness_checker():
     except Exception as exc:
         logger.warning("liveness checker init failed: %s", exc)
         return None
+
+
+def _resolve_landmark_106_path() -> Path | None:
+    """Путь к 2d106det.onnx (часть pack'а buffalo_l) под MODELS_DIR/PROJECT_MODELS_DIR."""
+    rel = Path(getattr(settings, "LIVENESS_LANDMARK_MODEL_REL", "buffalo_l/2d106det.onnx"))
+    for cand in (MODELS_DIR, PROJECT_MODELS_DIR):
+        p = cand / rel
+        if p.is_file():
+            return p
+    return None
+
+
+@lru_cache(maxsize=1)
+def get_landmarker_106():
+    """
+    Кэшированный Landmarker106 (2d106det) для active challenge liveness.
+    Provider-fallback CUDA → CPU (как у FaceAnalysis). None если модель не найдена
+    или все init-попытки упали — caller (challenge-движок) деградирует до 5pt-only.
+    """
+    from app.ml.liveness.landmarks import Landmarker106
+
+    model_path = _resolve_landmark_106_path()
+    if model_path is None:
+        logger.warning("landmarker_106 model not found (2d106det.onnx)")
+        return None
+    so = _make_session_options()
+    available = set(ort.get_available_providers())
+    for providers in (["CUDAExecutionProvider", "CPUExecutionProvider"], ["CPUExecutionProvider"]):
+        missing = [p for p in providers if p not in available]
+        if missing:
+            continue
+        try:
+            sess = ort.InferenceSession(str(model_path), sess_options=so, providers=providers)
+            return Landmarker106(str(model_path), session=sess)
+        except Exception as exc:
+            logger.warning("landmarker_106 init %s failed: %s", providers, exc)
+            continue
+    try:
+        sess = ort.InferenceSession(str(model_path), sess_options=so, providers=["CPUExecutionProvider"])
+        return Landmarker106(str(model_path), session=sess)
+    except Exception as exc:
+        logger.warning("landmarker_106 CPU init failed: %s", exc)
+        return None

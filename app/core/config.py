@@ -187,6 +187,27 @@ class Settings(BaseSettings):
     # Контракт yakhyo MiniFASNetV2: квадратный кроп scale×стороны bbox, вход 80×80.
     LIVENESS_CROP_SCALE: float = 2.7
     LIVENESS_INPUT_SIZE: int = 80
+    # -------------------------
+    # Active challenge liveness (online access control)
+    # -------------------------
+    # Feature-flag активного challenge-протокола (WS-стрим). Passive /liveness
+    # работает независимо от этого флага.
+    LIVENESS_ACTIVE_ENABLED: bool = False
+    LIVENESS_CHALLENGE_TTL_S: int = 60     # окно на запись/стрим видео после /init
+    LIVENESS_TOKEN_TTL_S: int = 120        # окно действия liveness_token в /verify
+    LIVENESS_CHALLENGE_ACTIONS: int = 2    # сколько действий в challenge
+    LIVENESS_WS_MAX_CONCURRENT: int = 8    # бёрст-лимит параллельных WS-сессий
+    LIVENESS_WS_MAX_FRAMES: int = 30       # лимит кадров на сессию (≤3с @10fps)
+    # 106-pt 2D landmarks (2d106det, часть pack'а buffalo_l) для EAR-blink и pose.
+    LIVENESS_LANDMARK_MODEL_REL: str = "buffalo_l/2d106det.onnx"
+    # Пороги детекции действий (эмпирические, калибруются на scaling-этапе):
+    LIVENESS_YAW_MIN_DEG: float = 25.0          # экскурсия yaw для turn_left/right
+    LIVENESS_PITCH_MIN_EXCURSION: float = 0.10  # отклонение nose_rel для nod
+    LIVENESS_EAR_DIP_RATIO: float = 0.30        # EAR падает на ≥30% от baseline → blink
+    LIVENESS_SMILE_DELTA: float = 0.04          # прирост mouth_width_ratio → smile
+    LIVENESS_CONSISTENCY_AREA_CV: float = 0.25  # max CV площади bbox по последовательности
+    LIVENESS_CONSISTENCY_IOU_MIN: float = 0.30  # min IoU bbox кадр-к-кадру (анти jump-cut)
+    LIVENESS_MIN_FRAMES: int = 6                # минимум кадров с лицом для вердикта
     FACE_MATCH_THRESHOLD: float = 0.6
     FACE_LOW_THRESHOLD: float = 0.3
     FACE_MARGIN_THRESHOLD: float = 0.1
