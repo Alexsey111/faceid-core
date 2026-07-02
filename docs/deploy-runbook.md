@@ -19,12 +19,25 @@ coverage-gate.
 - Сетевой доступ хостов друг к другу (для two-node-см. `docs/two-node-stand.md`).
 
 ### Секреты (НЕ коммитить)
-- `certs/` — TLS-сертификаты для `api_lb` (nginx). Положить `fullchain.pem`,
-  `privkey.pem`. На dev можно self-signed.
+- `certs/` — TLS-сертификаты для `api_lb` (nginx, `/etc/nginx/ssl`). Файлы
+  **`cert.pem`** + **`key.pem`** (имена фиксированы в `infrastructure/nginx/api_lb.conf`).
+  На dev — self-signed: `bash infrastructure/nginx/generate_self_signed.sh` из корня
+  репозитория. На Windows (Git Bash) — `MSYS_NO_PATHCONV=1 bash ...` (иначе `-subj
+  "/CN=localhost"` превращается в Windows-путь и сертификат не генерируется).
 - `DATABASE_URL`, `REDIS_URL`, `MINIO_ACCESS_KEY/SECRET_KEY`, JWT-секрет —
   через `.env` рядом с compose (в `.gitignore`) или переменные окружения оркестратора.
 - Ключ AES-256 для шифрования эмбеддингов — через `ENCRYPTION_KEY` (см.
   `app/core/config.py`); ротация — отдельная процедура (не в этом runbook).
+
+> **`.env` vs docker-compose**: корневой `.env` (если есть) нацелен на **локальный
+> host-запуск** Python (`REDIS_HOST=localhost`, `DATABASE_URL=...@localhost:5432`).
+> Docker Compose автоматически интерполирует `.env`, что ломает docker-сервисы
+> (`localhost` в контейнере = сам контейнер, redis/postgres недоступны). Поэтому
+> в `docker-compose.yml` для `worker`/`worker_metrics` host-конфликтующие
+> переменные прописаны явно (`REDIS_HOST=redis`,
+> `DATABASE_URL=postgresql://...@postgres:5432/faceid`) — без `${...:-...}`
+> интерполяции. `.env` используется только для host-run; не клади туда docker-
+> service-name-конфликты.
 
 ### Для GPU-пути (production)
 - NVIDIA driver + **nvidia-container-toolkit**.

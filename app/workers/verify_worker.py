@@ -1724,6 +1724,16 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                 )
             except Exception:
                 pass
+
+
+async def run_worker() -> None:
+    """Главная точка входа worker-цикла: setup metrics/threads, warmup, batch-loop.
+
+    Стартует Prometheus HTTP-server (9101), приводит inflight-состояние очереди в
+    ноль после рестарта, прогревает ML-pipeline, затем крутит batch-цикл:
+    collect_batch → asyncio.Task(process_batch). Семафор batch_slots ограничивает
+    параллельные активные батчи (MAX_ACTIVE_BATCH_TASKS).
+    """
     cv2.setNumThreads(1)
     cv2.ocl.setUseOpenCL(False)
     start_http_server(9101)

@@ -12,9 +12,9 @@ x-worker-base: &worker-base
   environment:
     - ENV=dev
     - MODELS_DIR=/app/models
-    - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/faceid}
+    - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
     - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-    - REDIS_HOST=${REDIS_HOST:-redis}
+    - REDIS_HOST=redis
     - CELERY_BROKER_URL=redis://redis:6379/0
     - CELERY_RESULT_BACKEND=redis://redis:6379/0
     - CELERYD_PREFETCH_MULTIPLIER=1
@@ -210,7 +210,9 @@ services:
     healthcheck:
       # /healthz отдаётся nginx напрямую 200 "ok" на :80 (без TLS) —
       # см. infrastructure/nginx/api_lb.conf. busybox wget есть в nginx:alpine.
-      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost/healthz || exit 1"]
+      # 127.0.0.1 (IPv4) — alpine резолвит localhost в ::1 (IPv6), nginx слушает
+      # только IPv4 (listen 80) → на ::1 connection refused.
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/healthz || exit 1"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -301,9 +303,9 @@ services:
       - INFLIGHT_LIMIT=${INFLIGHT_LIMIT:-10}
       - MAX_QUEUE_SIZE=${MAX_QUEUE_SIZE:-8}
       - ADMISSION_ACTIVE_SERVICE_SLOTS=${ADMISSION_ACTIVE_SERVICE_SLOTS:-4}
-      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/faceid}
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_HOST=redis
       - LIVENESS_ENABLED=false
       - ONNX_INTRA_OP_THREADS=1
       - ONNX_INTER_OP_THREADS=1
@@ -365,9 +367,9 @@ services:
       - ADMISSION_ACTIVE_SERVICE_SLOTS=${ADMISSION_ACTIVE_SERVICE_SLOTS:-4}
       - MAX_QUEUE_WAIT_SEC=${MAX_QUEUE_WAIT_SEC:-15}
       - MAX_JOB_AGE_MS=${MAX_JOB_AGE_MS:-0}
-      - DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@postgres:5432/faceid}
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
       - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_HOST=redis
       - LIVENESS_ENABLED=false
       - ONNX_INTRA_OP_THREADS=1
       - ONNX_INTER_OP_THREADS=1
