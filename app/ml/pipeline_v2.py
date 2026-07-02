@@ -200,13 +200,19 @@ class FacePipelineV2:
         face_quality = self.quality_gate.evaluate_detection(
             bbox=detection["bbox"],
             landmarks=detection.get("landmarks"),
+            image=image,
         )
         timings["quality_gate_face_ms"] = (now_perf_ns() - t0) / 1_000_000
 
         if not face_quality.passed:
             finalized_timings = _finalize_timings(timings)
+            # Окклюзия (маска/очки) → status="retry" (просим снять и пере-снять),
+            # capture-качество → status="quality_reject". Решение по reason-коду.
+            quality_status = (
+                "retry" if face_quality.reason == "remove_occlusion" else "quality_reject"
+            )
             return {
-                "status": "quality_reject",
+                "status": quality_status,
                 "quality_reason": face_quality.reason,
                 "quality_warning": face_quality.details.get("quality_warning"),
                 "quality_mode": face_quality.details.get("quality_gate_mode"),

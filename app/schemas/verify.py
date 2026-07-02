@@ -29,6 +29,10 @@ class VerifyResponse(BaseModel):
     reason: Optional[str] = None
     quality_details: Optional[dict[str, Any]] = None
 
+    # True при match с низким margin («серая» зона) — клиенту рекомендуем
+    # active-challenge liveness (turn/nod) через WS-стрим для подтверждения.
+    challenge_recommended: Optional[bool] = None
+
     model_config = ConfigDict(
         json_schema_extra={
             "examples": [

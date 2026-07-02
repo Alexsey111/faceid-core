@@ -1301,6 +1301,43 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     quality_reason=prepared.get("quality_reason"),
                     quality_details=prepared.get("quality_details", {}),
                 )
+            elif prepared["status"] == "retry":
+                # Окклюзия (маска/очки): не исход верификации, а запрос пере-съёмки.
+                # Метрику инкрементим как reject-счётчик по reason=remove_occlusion
+                # для наблюдаемости; job терминальный (клиент пере-создаёт запрос).
+                reason = prepared.get("quality_reason") or "remove_occlusion"
+                QUALITY_REJECT_COUNTER.labels(reason=reason).inc()
+                write_metrics = _build_metrics(created_at, job_started_at, time.time(), dequeued_at=dequeued_at)
+                result_write_ms = _timed_result_write(
+                    VerifyResultStore.set_done,
+                    job_id,
+                    {
+                        "status": "retry",
+                        "reason": reason,
+                        "quality_details": prepared.get("quality_details", {}),
+                        "liveness_passed": None,
+                        "replay_detected": False,
+                        "error_code": reason,
+                        "bbox": prepared.get("bbox"),
+                        "bbox_source": prepared.get("bbox_source"),
+                        "bbox_source_detail": prepared.get("bbox_source_detail"),
+                    },
+                    write_metrics,
+                )
+                _complete_terminal_job_inline(
+                    job_id=job_id,
+                    terminal_state="reject",
+                    created_at=created_at,
+                    job_started_at=job_started_at,
+                    dequeued_at=dequeued_at,
+                    result_write_ms=result_write_ms,
+                    claim_at=float(item.get("worker_claimed_at_ns", now_epoch_ns())) / 1_000_000_000.0,
+                    job_timings=job_timings,
+                    prepared_timings=prepared.get("timings", {}),
+                    outcome="retry",
+                    quality_reason=reason,
+                    quality_details=prepared.get("quality_details", {}),
+                )
             elif prepared["status"] == "spoof":
                 write_metrics = _build_metrics(created_at, job_started_at, time.time(), dequeued_at=dequeued_at)
                 result_write_ms = _timed_result_write(

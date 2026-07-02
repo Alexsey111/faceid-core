@@ -268,6 +268,18 @@ class VerificationService:
                 "bbox_source": result.get("bbox_source"),
             }
 
+        if result.get("status") == "retry":
+            # Окклюзия (маска/очки): не исход верификации, а запрос пере-съёмки.
+            # reason="remove_occlusion"; occlusion_flags лежат в quality_details.
+            return {
+                "status": "retry",
+                "reason": result.get("quality_reason") or "remove_occlusion",
+                "quality_details": result.get("quality_details", {}),
+                "timings": result.get("timings", {}),
+                "bbox": result.get("bbox"),
+                "bbox_source": result.get("bbox_source"),
+            }
+
         if result.get("status") == "spoof":
             liveness_score = result.get("liveness_score", result.get("confidence"))
             _record_liveness_fail()
@@ -490,6 +502,42 @@ class VerificationService:
                 require_liveness=require_liveness,
             ),
         )
+
+        if features.get("status") == "retry":
+            # Окклюзия (маска/очки) → status="retry", reason="remove_occlusion".
+            # Это НЕ исход верификации (не match/no_match), поэтому verification_log
+            # не пишем (не должно искажать FRR/TAR). Метрику reject-счётчика инкрементим
+            # отдельно для наблюдаемости (сколько попыток ушло в «снимите окклюзию»).
+            pipeline_time = features.get("timings", {})
+            reason = features.get("reason") or "remove_occlusion"
+
+            if job_id is None:
+                _observe_pipeline_metrics(pipeline_time)
+                if "quality_gate_face_ms" in pipeline_time:
+                    _observe_stage("quality_gate_face", float(pipeline_time["quality_gate_face_ms"]))
+
+            if METRICS_ENABLED:
+                try:
+                    QUALITY_REJECT_COUNTER.labels(reason=reason).inc()
+                    if "quality_gate_face_ms" in pipeline_time:
+                        QUALITY_GATE_FACE_MS.observe(float(pipeline_time["quality_gate_face_ms"]))
+                except Exception:
+                    pass
+            _record_verify_result(reason)
+            _observe_verify_latency(t_start)
+
+            return {
+                "status": "retry",
+                "reason": reason,
+                "quality_details": features.get("quality_details", {}),
+                "error_code": reason,
+                "liveness_passed": None,
+                "replay_detected": replay_detected,
+                "bbox": features.get("bbox"),
+                "bbox_source": features.get("bbox_source"),
+                "timings": pipeline_time,
+                "service_timings": service_timings,
+            }
 
         if features.get("status") == "quality_reject":
             pipeline_time = features.get("timings", {})
@@ -773,6 +821,13 @@ class VerificationService:
             float(pipeline_time.get("vector_search_ms", 0.0)),
         )
 
+        # «Серая» зона margin: match с низким отрывом от 2-го кандидата → сомнение,
+        # клиенту рекомендуем active-challenge (turn/nod) через WS-стрим.
+        challenge_recommended = (
+            decision_status == "match"
+            and float(settings.CHALLENGE_MARGIN_LOW) < float(margin) < float(settings.CHALLENGE_MARGIN_HIGH)
+        )
+
         return {
             "status": decision_status,
             "user_id": decision_user_id if decision_status == "match" else None,
@@ -780,6 +835,7 @@ class VerificationService:
             "margin": float(margin),
             "liveness_passed": liveness_passed,
             "replay_detected": replay_detected,
+            "challenge_recommended": bool(challenge_recommended),
             "bbox": features.get("bbox"),
             "bbox_source": features.get("bbox_source"),
             "timings": pipeline_time,

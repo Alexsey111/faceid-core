@@ -91,6 +91,16 @@ class Settings(BaseSettings):
             raise ValueError("POSE_QUALITY_MODE must be one of: hard, soft, off")
         return value
 
+    @field_validator("QUALITY_LIGHTING_MODE", mode="before")
+    @classmethod
+    def parse_quality_lighting_mode(cls, v):
+        if v is None:
+            return "soft"
+        value = str(v).strip().lower()
+        if value not in {"hard", "soft", "off"}:
+            raise ValueError("QUALITY_LIGHTING_MODE must be one of: hard, soft, off")
+        return value
+
     # -------------------------
     # PostgreSQL
     # -------------------------
@@ -167,6 +177,24 @@ class Settings(BaseSettings):
     QUALITY_MAX_EYE_LINE_DIFF_RATIO: float = 0.12
     QUALITY_MAX_NOSE_OFFSET_RATIO: float = 0.18
     POSE_QUALITY_MODE: str = "soft"  # hard | soft | off — отдельный режим pose-check
+    # Lighting (capture-качество): равномерность освещения и жёсткая тень. Свой режим,
+    # независимый от QUALITY_GATE_MODE (как pose). soft → warning-only (не отбрасывает,
+    # бережёт TAR на боковом свете), hard → quality_reject, off → пропустить.
+    QUALITY_LIGHTING_MODE: str = "soft"  # hard | soft | off
+    QUALITY_MIN_LIGHTING_UNIFORMITY: float = 0.55  # min_cell/max_cell по сетке 3×3
+    QUALITY_MAX_SHADOW_ASYMMETRY: float = 0.30  # |mean_left-mean_right|/overall_mean
+    # Окклюзия (маска/очки) — НЕ capture-качество, а требование чистого лица для
+    # допуска. Детекция всегда; при срабатывании → status="retry", reason=
+    # "remove_occlusion" (просим снять и пере-снять). Режим hard/soft/off НЕ действует:
+    # retry всегда. Тумблеры позволяют отключить детекцию отдельно.
+    QUALITY_MASK_DETECT_ENABLED: bool = True
+    QUALITY_MIN_LOWER_FACE_SKIN_FRAC: float = 0.45  # ниже → mask_detected
+    QUALITY_GLASSES_DETECT_ENABLED: bool = True
+    QUALITY_MAX_EYE_EDGE_DENSITY: float = 0.25  # Sobel-magnitude mean/255; выше → glasses_detected
+    # «Серая» зона margin верификации: при попадании в неё ok-ответ несёт
+    # challenge_recommended=True — клиент зовёт WS active-challenge (turn/nod).
+    CHALLENGE_MARGIN_LOW: float = 0.05
+    CHALLENGE_MARGIN_HIGH: float = 0.20
     RETINA_DET_SIZE: int = 512
     RETINA_DET_SIZE_SMALL: int = 320
     USE_PIPELINE_V2: bool = True

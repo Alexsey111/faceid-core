@@ -188,6 +188,7 @@ async def _call_fast_worker(
         "spoof",
         "spoof_detected",
         "quality_reject",
+        "retry",
         "processing_failed",
     }
 
