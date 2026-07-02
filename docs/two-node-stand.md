@@ -17,6 +17,13 @@ If you want to pin the async worker count explicitly:
 docker compose up -d --scale worker=4
 ```
 
+If node 1 has an NVIDIA GPU, layer the GPU override (CUDA build + GPU reservations
++ `ONNX_ARCFACE_PROVIDERS=cuda`); see `docs/deploy-runbook.md` § GPU-сборка:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+```
+
 ## Node 2
 
 1. Create a node 2 env file from `docker-compose.node2.env.example`.

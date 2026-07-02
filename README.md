@@ -1,326 +1,237 @@
-# FaceID Core — Pipeline V3 (Liveness + Observability)
+# FaceID Core
 
-## 📌 Обзор
+Сервис биометрической верификации лица для **контроля доступа на объект**:
+загрузка эталона, верификация по лицу, passive + active liveness (anti-spoof),
+quality-gate. Backend на FastAPI, ML на InsightFace/ONNX, хранилище PostgreSQL+pgvector,
+MinIO, Redis. Docker Compose deploy (CPU по умолчанию, GPU-override для CUDA-хостов).
 
-Данная ветка расширяет `pipeline-v2` и фиксирует:
-
-* ✅ Встроенный **liveness (anti-spoof)**
-* ✅ Production-ready ONNX модель (quantized)
-* ✅ Наблюдаемость (latency через logs + worker metrics)
-* ✅ Подтверждённый SLA под нагрузкой
-
----
-
-## 🧠 Архитектура
-
-### High-level flow
-
-```text
-Client → API → Queue → Worker → ML Pipeline → DB → Response
-```
+> Подробный операционный runbook — [`docs/deploy-runbook.md`](docs/deploy-runbook.md).
+> Мониторинг — [`docs/dashboard_guide.md`](docs/dashboard_guide.md). Двухнодовый стенд —
+> [`docs/two-node-stand.md`](docs/two-node-stand.md).
 
 ---
 
-### ML pipeline (V3)
+## Архитектура
 
-```text
-Image
-  → Preprocess
-  → Fast detector
-  → RetinaFace fallback
-  → Crop / Align
-  → Liveness (ONNX, anti-spoof)
-      ↳ если spoof → early exit
-  → Batch encoder (ArcFace)
-  → Normalize
-  → Search (FAISS / pgvector / CPU)
-  → Decision
+```mermaid
+flowchart LR
+    Client -->|HTTPS + JWT| LB[api_lb nginx]
+    LB --> API[FastAPI /api/v1]
+    API -->|sync fast-path| FastW[fast_worker verify_sync]
+    API -->|async| Queue[(Redis queue)]
+    Queue --> Worker[Celery worker]
+    FastW --> Pipe[ML Pipeline V3]
+    Worker --> Pipe
+    Pipe --> Det[RetinaFace/SCRFD detect]
+    Det --> QG[Quality gate]
+    QG -->|окклюзия| RetryR[status=retry]
+    QG --> Live[Passive liveness MiniFASNetV2]
+    Live -->|spoof| SpoofR[status=spoof_detected]
+    Live --> Enc[ArcFace encoder ONNX]
+    Enc --> Search[Search pgvector/FAISS]
+    Search --> Dec[Decision match/no_match]
+    Dec --> DB[(PostgreSQL+pgvector)]
+    Dec --> Logs[verification_logs]
+    API --> MinIO[(MinIO photo transit)]
 ```
+
+**Поток верификации:** API → (sync fast-path `verify_sync` ИЛИ async Celery-очередь) →
+ML Pipeline → детект → quality-gate → passive liveness → ArcFace-эмбеддинг →
+поиск по pgvector/FAISS → decision. При `liveness_mode="active"` liveness доказана
+WS-challenge-протоколом (см. ниже), passive в `/verify` не запускается.
 
 ---
 
-## ⚙️ Liveness (Anti-Spoof)
+## Liveness (anti-spoof)
 
-### Используемая модель
+### Passive — MiniFASNetV2 (yakhyo)
+
+Дешёвый барьер на каждый кадр, без интерактива.
+
+| Параметр | Значение |
+|---|---|
+| Модель | `models/MiniFASNetV2_yakhyo.onnx` |
+| Вход | 80×80, BGR, 0–255 (без /255), квадратный кроп `crop_face_square(scale=2.7)` |
+| Выход | 3 логита `[dead(idx0), real(idx1), spoof(idx2)]` — эффективно бинарная |
+| Порог | `LIVENESS_THRESHOLD = 0.859` (`real=softmax[idx1]`) |
+| Индикаторы | `spoofing_indicators = {real_prob, spoof_prob}` (idx0 не выносится) |
+
+Модель **не различает типы атак** (print/replay/cutout) — только real/spoof.
+Latency ≈ 8–10 мс (CPU), <1% от encode.
+
+### Active challenge — gate допуска (cutout-защита)
+
+Passive **не различает cutout-атаку** (фото с вырезом) — классифицирует как `real`
+P=0.976. Для допуска на объект (high-security) этого недостаточно. Решение —
+**active challenge как обязательный gate**:
 
 ```text
-models/liveness.onnx
-(best_model_quantized.onnx)
+POST /api/v1/liveness/challenge/init  → challenge_id + ws_token + actions (turn/nod/blink)
+WS   /api/v1/liveness/challenge/stream → стрим кадров → verify_challenge_stream
+                                        → is_live=True → liveness_token (single-use, TTL)
+POST /api/v1/verify_base64             → liveness_mode="active" + liveness_token
 ```
+
+Cutout/print — статичны, действия не выполняют → `is_live=False` → токен не выдаётся
+→ `/verify` без токена → `403 active_liveness_required`.
+
+Тумблер `LIVENESS_ACTIVE_REQUIRED` (default `false`, backward-compat):
+- `false` — passive-допуск разрешён (текущие deploys не ломаются);
+- `true` — high-security: при `require_liveness=true` допуск **только** через active
+  proof. Точки gate: `_resolve_liveness` (`/verify_base64`, `/verify_async_base64`),
+  `/verify_async_file`, `/verify_async` (JSON), defense-in-depth в worker.
+
+> Active proof принимает только `/verify_base64` (sync fast-path). Multipart-эндпоинты
+> (`/verify`, `/verify_async_file`) токен не несут — для access-control не использовать.
 
 ---
 
-### Причины выбора
+## Quality gate
 
-```text
-✔ низкая latency (CPU-friendly)
-✔ quantized (минимальная нагрузка)
-✔ подходит для single-image сценария
-✔ стабильная работа в production
-```
+Многоуровневая проверка качества на кропе лица + 5-pt landmarks (cv2, sub-ms, без
+отдельной ONNX-модели). Режимы `QUALITY_GATE_MODE` / `QUALITY_LIGHTING_MODE` /
+`POSE_QUALITY_MODE`: `hard` (отбрасывать) / `soft` (warning-only, защищает TAR) / `off`.
 
----
+| Класс | Что | Результат |
+|---|---|---|
+| Capture-качество | blur, brightness, contrast, min face side, pose | `status="quality_reject"` (в `hard`) |
+| Освещение | uniformity 3×3 grid, shadow asymmetry | `bad_lighting` / `hard_shadow` (`QUALITY_LIGHTING_MODE`) |
+| **Окклюзия** | маска И очки (skin-tone / edge-density эвристики) | **`status="retry"`, `reason="remove_occlusion"`** |
 
-### Preprocessing
+**Окклюзия — не отказ, а запрос пере-съёмки**: клиент по `occlusion_flags`
+(`mask_detected`, `glasses_detected`) просит снять окклюзию и пере-вызывает `/verify`.
+Верификация (match/no_match) считается **только** по чистому лицу — точность
+распознавания сохраняется. Тумблеры `QUALITY_MASK_DETECT_ENABLED`,
+`QUALITY_GLASSES_DETECT_ENABLED`.
 
-```text
-input: 128x128
-color: RGB
-dtype: float32
-```
-
----
-
-### Output
-
-```text
-[real_score, spoof_score]
-```
+При сомнениях в match-margin (серая зона `CHALLENGE_MARGIN_LOW/HIGH`) — в ответе
+`challenge_recommended: true` (клиент зовёт active challenge).
 
 ---
 
-### Decision
+## API контракт
 
-```text
-liveness_passed = real_score > threshold
-```
+Все бизнес-эндпоинты под префиксом **`/api/v1`** (health/ready/docs без префикса),
+защита JWT/X-API-Key (`AUTH_ENABLED=false` для dev).
 
----
+| Метод | Путь | Назначение |
+|---|---|---|
+| POST | `/api/v1/upload` | загрузка эталона |
+| POST | `/api/v1/verify` | верификация (multipart) |
+| POST | `/api/v1/verify_base64` | верификация (base64, sync fast-path + Celery fallback) — **носит active liveness** |
+| POST | `/api/v1/verify_async_file` | async: file → MinIO → очередь |
+| POST | `/api/v1/verify_async_base64` | async: base64 → очередь |
+| POST | `/api/v1/verify_async` | async JSON (admission-control) |
+| POST | `/api/v1/liveness` | passive liveness (standalone) |
+| POST | `/api/v1/liveness/challenge/init` | active challenge init |
+| WS | `/api/v1/liveness/challenge/stream` | active challenge стрим → liveness_token |
+| GET | `/api/v1/verify_result/{job_id}` | статус async-задачи |
+| POST | `/api/v1/update_reference` | обновление эталона |
 
-### Поведение pipeline
+**Ответ `/verify`**: `status` (`match` / `low_confidence` / `no_match` /
+`spoof_detected` / `quality_reject` / `retry` / `processing_failed`), `match_score`
+(= legacy `similarity`), `confidence` (`high` ≥0.6 / `medium` ≥0.3 / `low` / `null`),
+`liveness_passed`, `liveness_score`, `spoofing_indicators` (`{real_prob, spoof_prob}`),
+`quality_details`, `occlusion_flags`, `challenge_recommended`.
 
-```text
-если spoof:
-→ pipeline завершается
-→ encode НЕ вызывается
-→ экономия CPU
-```
-
----
-
-## 📊 Liveness Performance
-
-```text
-avg: ~10 ms
-p50: ~7.5 ms
-p95: <16 ms
-```
-
----
-
-### Относительно encoder
-
-```text
-liveness ≈ 8% от encode latency
-```
+Пороги: `FACE_MATCH_THRESHOLD=0.6` (match), `FACE_LOW_THRESHOLD=0.3` (no_match),
+`SIM_THRESHOLD=0.30` (pre-filter поиска = LOW_THRESHOLD, не срезает low_confidence-band).
 
 ---
 
-### Сравнение
+## Безопасность (152-ФЗ)
 
-```text
-encode avg: ~125 ms
-liveness avg: ~10 ms
-```
-
----
-
-## 🎯 Вывод
-
-```text
-✔ liveness НЕ является bottleneck
-✔ безопасно держать ALWAYS ON
-✔ SLA не деградирует
-```
+- **Эмбеддинги шифруются AES-256** при записи в БД (`ENCRYPTION_KEY` — секрет окружения).
+- **Исходные фото не хранятся**: после извлечения эмбеддинга байт-картинка удаляется;
+  MinIO используется только как транзит для async-задач (воркер удаляет объект после
+  обработки).
+- **Логи без биометрии**: `app/core/logger.py` → `BiometryRedactionFilter` вычищает
+  base64-блобы, ndarray-эмбеддинги, биометрические ключи (defense-in-depth в
+  `JsonFormatter`).
+- **HTTPS + JWT**: продакшн-трафик через `api_lb` (nginx, :8443 TLS); JWT/X-API-Key на
+  всех бизнес-эндпоинтах.
+- **Rate limiting**, backpressure (queue-delay admission control), anti-replay.
 
 ---
 
-## 📊 Метрики
+## Deploy
 
-### Доступны:
-
-```text
-queue_delay_ms
-pipeline_ms
-detect_ms
-encode_ms
-liveness_ms (через logs)
-```
-
----
-
-### Важно
-
-```text
-liveness_ms считается в worker
-не виден в API /metrics
-```
-
----
-
-### Текущий подход
-
-```text
-✔ логирование (worker logs)
-✔ ручная агрегация p50/p95
-```
-
----
-
-### Причина
-
-```text
-Celery prefork ≠ Prometheus multiprocess (из коробки)
-```
-
----
-
-## 🎯 Финальная схема
-
-```text
-API:
-  лёгкий orchestration слой
-
-Workers:
-  replicas = 4
-  semaphore = 2
-  batch_size = 8
-  collect_timeout = 50ms
-
-Runtime:
-  ONNX intra/inter = 1/1
-
-Flow:
-  sync verify — для low-latency одиночных вызовов
-  async verify — для очередного compute-path
-```
-
----
-
-## Encoder Performance (CPU tuned)
-
-```text
-Threads: 1/1
-```
-
-### Note
-
-```text
-1/1 now matches the final runtime target for predictable CPU usage.
-```
-
-To scale the async worker locally:
+### CPU (dev / production без GPU)
 
 ```bash
-docker compose up --scale worker=2
+docker compose up -d --build
 ```
 
-`worker` does not publish a host port; multiple replicas are meant to be scaled horizontally.
+Поднимает postgres (pgvector), redis, minio, api, api_lb, worker, prometheus.
+Healthcheck'и + `restart: unless-stopped` на всех长期-сервисах (см. runbook).
 
----
-
-## 🚀 Запуск
+### GPU (production с CUDA)
 
 ```bash
-docker compose up --build
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 ```
+
+Override переключает `api`/`worker` на CUDA-образы (`nvidia/cuda:11.8 + cuDNN 8`,
+`onnxruntime-gpu`), резервирует GPU, ставит `ONNX_ARCFACE_PROVIDERS=cuda`, поднимает
+`EMBED_BATCH_SIZE`. Требует nvidia-container-toolkit. Код энкодера имеет
+CUDA→DML→CPU fallback (`ONNX_ARCFACE_PROVIDERS=auto` default).
+
+> Локальная dev-машина без NVIDIA CUDA — только CPU-сборка; архитектура под CPU не
+> сужается (production может быть на GPU-хостах).
+
+### Конфигурация
+
+Основные тумблеры (env / `app/core/config.py`): `LIVENESS_ENABLED`,
+`LIVENESS_ACTIVE_ENABLED`, `LIVENESS_ACTIVE_REQUIRED`, `LIVENESS_THRESHOLD=0.859`,
+`ONNX_ARCFACE_PROVIDERS=auto`, `ARCFACE_MODEL_REL=buffalo_l/w600k_r50.onnx`,
+`QUALITY_GATE_MODE`, `AUTH_ENABLED`, `FAISS_ENABLED`. Полный список — в config и runbook.
 
 ---
 
-## 🧪 Тестирование
+## Тестирование и coverage
 
 ```bash
-pytest -q
+# unit-набор (без DB/Redis)
+python -m pytest tests/ -m unit -q
+
+# полный suite (unit + integration; требует postgres_test/redis)
+python -m pytest -q
+
+# coverage (измерение, без gate)
+python -m pytest --cov=app --cov-branch --cov-report=term-missing
+
+# coverage gate (CI, KPI ≥90% на полном suite)
+python -m pytest --cov=app --cov-branch --cov-fail-under=90
 ```
+
+`fail_under` намеренно не зашит в `pyproject.toml` — чтобы `pytest --cov` на частичных
+прогонах не падал; gate задаётся явным `--cov-fail-under` в CI. Конфиг coverage:
+`[tool.coverage.run]` (source=`app`, branch) в `pyproject.toml`. Текущее покрытие
+unit-only ≈39%, выше с integration; цель — ratchet к 90%.
 
 ---
 
-## 📈 Производительность (после V3)
+## Observability
 
-```text
-e2e_latency:
-avg ~270 ms
-p95 ~540 ms
-
-429:
-0%
-```
+- Prometheus + Grafana: `docs/grafana_dashboard.json`, `docs/dashboard_guide.md`.
+- Метрики: `queue_delay_ms`, `pipeline_ms`, `detect_ms`, `encode_ms`, `quality_reject`,
+  verify-result counter, liveness pass/fail. Worker-side latency — через logs
+  (Celery prefork ≠ Prometheus multiprocess из коробки).
+- Structured JSON-логи с redaction (биометрия вычищается).
 
 ---
 
-## ⚠️ Ограничения
+## Стек
 
-```text
-• основной bottleneck — encoder (ArcFace)
-• RetinaFace fallback дорогой
-• worker scaling пока горизонтально ограничен
-• полноценный Prometheus multiprocess не реализован
-```
+Python 3.11, FastAPI, Pydantic v2, SQLAlchemy 2 (async), Celery, Redis, PostgreSQL+pgvector,
+MinIO, InsightFace (ArcFace `buffalo_l/w600k_r50`), SCRFD/RetinaFace detect, ONNX Runtime,
+OpenCV. Инфра: Docker Compose (Kubernetes опционально).
 
----
+## Ограничения
 
-## 🧭 Roadmap (V3 → V4)
-
-### 1. Detector optimization (приоритет №1)
-
-```text
-уменьшить RetinaFace вызовы
-→ рост производительности 20–40%
-```
-
----
-
-### 2. Autoscaling workers
-
-```text
-динамическое масштабирование worker_fast
-```
-
----
-
-### 3. Embedding cache (Redis)
-
-```text
-ускорение повторных запросов
-```
-
----
-
-### 4. Полный мониторинг
-
-```text
-Prometheus multiprocess / sidecar exporter
-```
-
----
-
-## 📌 Статус
-
-```text
-Production-ready
-SLA соблюдается
-Security layer (liveness) включён
-```
-
----
-
-## ❗ Важно
-
-```text
-• liveness обязателен (ALWAYS ON)
-• изменения через feature-ветки
-• перед правками — запрашивать текущий код
-• соблюдать существующую архитектуру
-```
-
----
-
-# 🧠 Короткий итог ветки
-
-```text
-V2 → scalable pipeline
-V3 → secure pipeline (liveness) + validated SLA
-```
-
-
-
+- Passive liveness не различает cutout — закрыто active-gate (политикой, не моделью).
+- Cutout-эвристика (маска/очки) грубая — ложный retry стоит недорого (пере-съёмка),
+  ложный пропуск отключается тумблером; пороги вынесены в config для калибровки.
+- Multipart `/verify` не поддерживает active proof — для access-control использовать
+  `/verify_base64`.
+- Полноценный Prometheus multiprocess для worker-side latency не реализован (logs).

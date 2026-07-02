@@ -22,6 +22,11 @@ Benchmark note:
 - The thresholds are too strict.
 - The traffic quality got worse: blur, dark images, tiny faces, or junk inputs.
 - Always check reject reasons first.
+- Note: occlusion (mask/glasses) goes to a separate `status="retry"` /
+  `reason="remove_occlusion"` counter, not `quality_reject` — a retry is a
+  re-capture request, not a rejection. A spike in retry-rate means the
+  occlusion heuristics (`QUALITY_MASK_DETECT_ENABLED`,
+  `QUALITY_GLASSES_DETECT_ENABLED`) may be too aggressive.
 
 ### 4. Detect Versus Encode
 - If `encode_p95` is much higher than `detect_p95`, that is usually normal.
@@ -51,9 +56,14 @@ Signals:
 Action:
 - Relax thresholds
 - Start with:
-- `MIN_BLUR_SCORE`
-- `MIN_BRIGHTNESS`
-- `MIN_FACE_SIDE`
+- `QUALITY_MIN_BLUR_SCORE`
+- `QUALITY_MIN_BRIGHTNESS`
+- `QUALITY_MIN_FACE_SIDE`
+- For lighting rejects: `QUALITY_LIGHTING_MODE` (`soft` warning-only), or
+  `QUALITY_MIN_LIGHTING_UNIFORMITY` / `QUALITY_MAX_SHADOW_ASYMMETRY`.
+- For occlusion retry spikes: disable `QUALITY_MASK_DETECT_ENABLED` /
+  `QUALITY_GLASSES_DETECT_ENABLED`, or relax `QUALITY_MIN_LOWER_FACE_SKIN_FRAC` /
+  `QUALITY_MAX_EYE_EDGE_DENSITY`.
 
 ### Scenario 3: Latency Is Increasing
 Signals:
