@@ -17,8 +17,9 @@ build/
 .coverage
 tests/data/
 tests/images/
-models/
-models_backup/
+/models/*
+!/models/README.md
+/models_backup/
 
 # P0 security artifacts
 # Self-signed dev TLS certs (см. infrastructure/nginx/generate_self_signed.sh)
