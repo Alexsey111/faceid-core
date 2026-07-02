@@ -22,6 +22,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Копирование кода приложения
 COPY app ./app
 COPY models ./models
+# Демо-GUI для презентаций (см. docs/demo-guide.md). Только dev; в production
+# mount /demo убирается или защищается auth+HTTPS.
+COPY demo ./demo
 
 # Переменные окружения
 ENV PYTHONUNBUFFERED=1

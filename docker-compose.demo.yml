@@ -1,0 +1,26 @@
+# docker-compose.demo.yml — override для локальной демонстрации FaceID Core.
+#
+# Назначение: поднять стек в режиме «презентация на локальном ПК»:
+#   • AUTH_ENABLED=false      — демо-GUI работает без JWT/X-API-Key
+#   • LIVENESS_ENABLED=true   — passive /liveness активен
+#   • LIVENESS_ACTIVE_ENABLED=true — active WS-challenge активен (защита от cutout)
+#
+# Базовый docker-compose.yml захардкодил LIVENESS_ENABLED=false и не выставляет
+# AUTH_ENABLED (default True) — override ставит демо-значения БЕЗ правки base.
+#
+# Запуск:
+#   docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d --build
+# Затем открыть http://localhost:8000/demo/ (getUserMedia на localhost без HTTPS).
+#
+# ВНИМАНИЕ: только dev/презентация. Не использовать в production без auth+HTTPS.
+# См. docs/demo-guide.md.
+services:
+  api:
+    environment:
+      - AUTH_ENABLED=false
+      - LIVENESS_ENABLED=true
+      - LIVENESS_ACTIVE_ENABLED=true
+  worker:
+    environment:
+      - LIVENESS_ENABLED=true
+      - LIVENESS_ACTIVE_ENABLED=true

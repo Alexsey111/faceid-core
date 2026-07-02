@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>FaceID Core — демо</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>FaceID Core <span class="muted">— демонстрация</span></h1>
+    <div class="health">
+      <span id="health-api"  class="pill pill-unknown" title="GET /health">API: ?</span>
+      <span id="health-ready" class="pill pill-unknown" title="GET /ready">ready: ?</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- Левая панель: веб-камера -->
+    <section class="camera-panel">
+      <h2>Веб-камера</h2>
+      <div class="video-wrap">
+        <video id="cam" autoplay playsinline muted></video>
+        <canvas id="canvas" hidden></canvas>
+      </div>
+      <div class="cam-controls">
+        <button id="cam-start" class="btn">Старт камеры</button>
+        <button id="cam-stop"  class="btn btn-ghost" disabled>Стоп</button>
+        <button id="snap"      class="btn btn-accent" disabled>Захватить кадр</button>
+      </div>
+      <p id="cam-status" class="muted small">Камера не запущена.</p>
+      <p class="muted small">Кадры используются только в памяти (152-ФЗ): не сохраняются, не логируются.</p>
+    </section>
+
+    <!-- Правая панель: режимы -->
+    <section class="tabs-panel">
+      <nav class="tabs">
+        <button class="tab active" data-tab="verify">Verify</button>
+        <button class="tab"        data-tab="upload">Upload</button>
+        <button class="tab"        data-tab="liveness">Liveness</button>
+        <button class="tab"        data-tab="active">Active Challenge</button>
+        <button class="tab"        data-tab="config">Config</button>
+      </nav>
+
+      <!-- Общие параметры запроса -->
+      <div class="shared-params">
+        <label>user_id
+          <input id="user-id" type="text" value="demo_user_1" />
+        </label>
+        <label class="checkbox">
+          <input id="require-liveness" type="checkbox" checked /> require_liveness
+        </label>
+        <fieldset class="radio-group">
+          <legend>liveness_mode</legend>
+          <label><input type="radio" name="lmode" value="passive" checked /> passive</label>
+          <label><input type="radio" name="lmode" value="active" /> active</label>
+        </fieldset>
+      </div>
+
+      <!-- Таб Verify -->
+      <div class="tab-panel active" data-panel="verify">
+        <p class="muted small">POST /api/v1/verify_base64 — верификация по кадру с камеры.</p>
+        <div class="actions">
+          <button id="verify-run" class="btn btn-accent">Verify</button>
+          <span id="verify-busy" class="muted small" hidden>обработка…</span>
+        </div>
+        <div id="verify-result" class="result"></div>
+      </div>
+
+      <!-- Таб Upload -->
+      <div class="tab-panel" data-panel="upload">
+        <p class="muted small">POST /api/v1/upload_base64 — записать эталон по кадру с камеры.</p>
+        <div class="actions">
+          <button id="upload-run" class="btn btn-accent">Загрузить эталон</button>
+        </div>
+        <div id="upload-result" class="result"></div>
+      </div>
+
+      <!-- Таб Liveness -->
+      <div class="tab-panel" data-panel="liveness">
+        <p class="muted small">POST /api/v1/liveness (passive, multipart) — отдельная проверка живости.</p>
+        <div class="actions">
+          <button id="liveness-run" class="btn btn-accent">Проверить liveness</button>
+        </div>
+        <div id="liveness-result" class="result"></div>
+      </div>
+
+      <!-- Таб Active Challenge -->
+      <div class="tab-panel" data-panel="active">
+        <p class="muted small">Active challenge (WS): init → стрим кадров с действиями → liveness_token → verify active. Защита от cutout/print.</p>
+        <div class="actions">
+          <button id="active-init"  class="btn btn-accent">Начать challenge</button>
+          <button id="active-done"  class="btn" disabled>Готово (done)</button>
+          <button id="active-cancel" class="btn btn-ghost" disabled>Отмена</button>
+        </div>
+        <div id="active-actions" class="actions-list"></div>
+        <div id="active-status" class="muted small"></div>
+        <div id="active-result" class="result"></div>
+        <div class="actions">
+          <button id="active-verify" class="btn btn-accent" disabled>Verify active</button>
+        </div>
+        <div id="active-verify-result" class="result"></div>
+      </div>
+
+      <!-- Таб Config -->
+      <div class="tab-panel" data-panel="config">
+        <p class="muted small">GET /api/v1/config — текущие пороги сервера (read-only). Слайдер — client-side интерпретация match/no_match.</p>
+        <button id="config-refresh" class="btn">Обновить</button>
+        <table id="config-table" class="config-table">
+          <thead><tr><th>Параметр</th><th>Значение</th></tr></thead>
+          <tbody></tbody>
+        </table>
+        <div class="slider-wrap">
+          <label for="match-slider">Client-side порог match: <span id="match-slider-val">0.60</span></label>
+          <input id="match-slider" type="range" min="0" max="1" step="0.01" value="0.6" />
+          <p class="muted small">Влияет только на цвет бейджа в результатах verify. Серверный порог не меняется.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script src="app.js" defer></script>
+</body>
+</html>

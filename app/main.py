@@ -9,6 +9,7 @@ import threading
 import time
 from typing import Any
 from fastapi import Depends, FastAPI, Response
+from fastapi.staticfiles import StaticFiles
 from prometheus_client import CONTENT_TYPE_LATEST, CollectorRegistry, REGISTRY, generate_latest, multiprocess
 import cv2
 import numpy as np
@@ -168,6 +169,15 @@ def create_app() -> FastAPI:
 
     app.middleware("http")(request_id_middleware)
     app.middleware("http")(metrics_middleware)
+    # Демо-GUI для презентаций (dev; AUTH_ENABLED=false в env). Same-origin:
+    # статика на /demo/, API на /api/v1 — CORS не нужен. Production убирает mount
+    # или ставит перед ним auth+HTTPS (см. docs/demo-guide.md).
+    # Путь разрешаем от расположения app/main.py (корень репо → demo/), а не от CWD:
+    # так mount работает и из Docker (CWD=/app), и при host-run, и в тестах.
+    # Graceful skip при отсутствии demo/ — чтобы запуск без демо-артефактов не падал.
+    _demo_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), "demo")
+    if os.path.isdir(_demo_dir):
+        app.mount("/demo", StaticFiles(directory=_demo_dir, html=True), name="demo")
     # Все бизнес-эндпоинты под /api/v1 (ТЗ 4): /api/v1/verify, /api/v1/liveness,
     # /api/v1/upload и т.д. Health/ready/docs остаются без префикса (оркестратор).
     app.include_router(router, prefix="/api/v1")
