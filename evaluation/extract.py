@@ -29,8 +29,21 @@ from evaluation.datasets import iter_id_images
 
 logger = logging.getLogger("evaluation.extract")
 
+# Путь к ArcFace recognition-модели относительно MODELS_DIR (см. settings.ARCFACE_MODEL_REL).
+# Tuple оставлен для обратной совместимости со сторонними импортами; источник истины — settings.
 ARCFACE_MODEL_REL = ("buffalo_l", "w600k_r50.onnx")
 INPUT_SIZE = (112, 112)
+
+
+def _arcface_rel() -> str:
+    """settings.ARCFACE_MODEL_REL как строку (напр. 'buffalo_l/w600k_r50.onnx')."""
+    from app.core.config import settings
+    return settings.ARCFACE_MODEL_REL
+
+
+def _arcface_path(models_dir: str | os.PathLike) -> Path:
+    """Полный путь к ArcFace recognition-модели под данным models_dir."""
+    return Path(models_dir) / _arcface_rel()
 
 
 def _read_bgr(path: Path) -> np.ndarray:
@@ -53,19 +66,32 @@ def _crop_roi(image: np.ndarray, bbox: list[float]) -> np.ndarray:
     return image[y1:y2, x1:x2]
 
 
+def _select_main_face(faces: list[dict]) -> dict:
+    """Делегирует в app.ml.detection.face_selection.select_main_face.
+
+    Robust-эвристика: IoU-дедуп (дубли одного лица) → highest-confidence в группе
+    → largest-area среди групп. Восстанавливает faces[0]-качество на кропнутых
+    лицах и сохраняет largest-выигрыш на full-scene (LFW). См. docstring модуля
+    и memory lfw-single-face-meets-target.
+    """
+    from app.ml.detection.face_selection import select_main_face
+
+    return select_main_face(faces)
+
+
 def _get_encoder(models_dir: str | os.PathLike):
     """OnnxArcFaceEncoder напрямую (минуя BatchEncoder-timeout-обёртку) для throughput."""
     from app.core.config import settings  # noqa: F401  — гарантирует, что settings загружен
     from app.ml.embedding.onnx_arcface_encoder import OnnxArcFaceEncoder
 
-    model_path = Path(models_dir) / "buffalo_l" / "w600k_r50.onnx"
+    model_path = _arcface_path(models_dir)
     if not model_path.is_file():
         raise FileNotFoundError(f"ArcFace model not found: {model_path}")
     return OnnxArcFaceEncoder(model_path)
 
 
 def _model_sha256(models_dir: str | os.PathLike) -> str:
-    path = Path(models_dir) / "buffalo_l" / "w600k_r50.onnx"
+    path = _arcface_path(models_dir)
     if not path.is_file():
         return ""
     h = hashlib.sha256()
@@ -99,6 +125,7 @@ def extract_orig(
     n_aligned = 0
     n_fallback = 0
     n_no_face = 0
+    n_multi_face = 0
     n_total = sum(len(v) for v in dataset.values())
     done = 0
 
@@ -117,7 +144,9 @@ def extract_orig(
             if on_progress and done % 100 == 0:
                 on_progress(done, n_total)
             continue
-        top = faces[0]
+        if len(faces) > 1:
+            n_multi_face += 1
+        top = _select_main_face(faces)  # наибольшее лицо, НЕ faces[0] (см. docstring)
         landmarks = top.get("landmarks")
         if landmarks is not None:
             face_input = norm_crop(image, np.asarray(landmarks, dtype=np.float32), 112)
@@ -145,6 +174,7 @@ def extract_orig(
         "n_aligned": n_aligned,
         "n_fallback": n_fallback,
         "n_no_face": n_no_face,
+        "n_multi_face": n_multi_face,
         "det_size": int(det_size),
         "model_sha256": _model_sha256(models_dir),
         "path": "orig:retinaface+norm_crop(112)",
@@ -256,7 +286,7 @@ def _default_models_dir() -> str:
         PROJECT_ROOT.parent / "models",
     ]
     for cand in candidates:
-        if (cand / "buffalo_l" / "w600k_r50.onnx").is_file():
+        if (cand / _arcface_rel()).is_file():
             return str(cand)
     # fallback — пусть encoder честно упадёт с понятной ошибкой про путь.
     return str(Path(settings.MODELS_DIR))

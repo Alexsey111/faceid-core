@@ -30,16 +30,22 @@ faiss_meta.json
 
 # P1 evaluation harness: кеш эмбеддингов и отчёты (генерируются, не коммитятся)
 evaluation/cache/
+evaluation/cache_glintr100/
 evaluation/out/
 
 # P2 liveness eval-harness: кеш предсказаний и отчёты
 evaluation/liveness/cache/
 evaluation/liveness/out/
 
+# P3 LFW eval-harness: кеш эмбеддингов и отчёты
+evaluation/lfw/cache/
+evaluation/lfw/out/
+
 # Локальные eval-датасеты (скачиваются/генерируются локально, не в git)
 Face Data/
 Extracted Faces/
 Anti-Spoofing Dataset/
+lfw_data/
 
 # Benchmark outputs (capture_lb_capacity_curve и др. — генерируются локально)
 benchmarks/
@@ -61,6 +67,10 @@ workers_*.log
 temp_upload_test.py
 test.json
 summary.json
+
+# Локальные настройки Claude Code (permissions и т.п. — не коммитятся)
+# settings.json (shared) может коммититься; settings.local.json — нет
+.claude/settings.local.json
 
 # Локальная инструкция ассистента (не публикуется)
 CLAUDE.md
