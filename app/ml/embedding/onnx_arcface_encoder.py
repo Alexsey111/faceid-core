@@ -17,6 +17,64 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 
+def _provider_candidates(setting: str) -> list[list[str]]:
+    """
+    Раскрыть settings.ONNX_ARCFACE_PROVIDERS в упорядоченный список
+    кандидатов-списков провайдеров для поочерёдного try/fallback (зеркало
+    паттерна runtime.get_face_app_for_size). Каждый кандидат дополняется
+    CPUExecutionProvider хвостом — чтобы недоступные на GPU узлы шли на CPU.
+    """
+    cpu = "CPUExecutionProvider"
+    key = setting.strip().lower()
+    if key == "auto":
+        return [
+            ["CUDAExecutionProvider", cpu],
+            ["DmlExecutionProvider", cpu],
+            [cpu],
+        ]
+    if key == "cuda":
+        return [["CUDAExecutionProvider", cpu]]
+    if key == "directml":
+        return [["DmlExecutionProvider", cpu]]
+    if key == "cpu":
+        return [[cpu]]
+    # явный csv-список провайдеров (напр. "CUDAExecutionProvider,CPUExecutionProvider")
+    explicit = [p.strip() for p in setting.split(",") if p.strip()]
+    if not explicit:
+        return [[cpu]]
+    return [explicit] if cpu in explicit else [explicit + [cpu]]
+
+
+def _create_session(model_path: str, so: ort.SessionOptions) -> tuple[ort.InferenceSession, list[str]]:
+    """
+    Создать InferenceSession, перебирая кандидатов провайдеров по доступности
+    (ort.get_available_providers) и try/except. Гарантированный фолбэк — CPU.
+    Возвращает (session, фактически использованные провайдеры).
+    """
+    available = set(ort.get_available_providers())
+    candidates = _provider_candidates(settings.ONNX_ARCFACE_PROVIDERS)
+
+    for providers in candidates:
+        missing = [p for p in providers if p not in available]
+        if missing:
+            logger.warning("ArcFace providers %s unavailable (missing %s) — skipping candidate",
+                           providers, missing)
+            continue
+        try:
+            session = ort.InferenceSession(model_path, sess_options=so, providers=providers)
+            logger.info("ArcFace session created with providers %s", providers)
+            return session, providers
+        except Exception as exc:  # noqa: BLE001 — fallback по любому провалу
+            logger.warning("ArcFace init with providers %s failed (%s) — next candidate",
+                           providers, exc)
+            continue
+
+    # последний честный шанс — чистый CPU (всегда доступен)
+    logger.warning("ArcFace: all GPU/DML candidates failed — fallback to CPUExecutionProvider")
+    session = ort.InferenceSession(model_path, sess_options=so, providers=["CPUExecutionProvider"])
+    return session, ["CPUExecutionProvider"]
+
+
 class OnnxArcFaceEncoder:
     """
     CPU-optimized ONNX ArcFace encoder.
@@ -37,11 +95,7 @@ class OnnxArcFaceEncoder:
         so.inter_op_num_threads = max(1, int(settings.ONNX_INTER_OP_THREADS))
         so.log_severity_level = 3
 
-        self.session = ort.InferenceSession(
-            model_path,
-            sess_options=so,
-            providers=["CPUExecutionProvider"],
-        )
+        self.session, self.active_providers = _create_session(model_path, so)
 
         self.input_name = self.session.get_inputs()[0].name
         self.output_name = self.session.get_outputs()[0].name
@@ -49,9 +103,10 @@ class OnnxArcFaceEncoder:
         self.last_batch_timings: dict[str, float | int] = {}
 
         logger.info(
-            "ArcFace ONNX loaded input=%s output=%s intra=%s inter=%s",
+            "ArcFace ONNX loaded input=%s output=%s providers=%s intra=%s inter=%s",
             self.input_name,
             self.output_name,
+            self.active_providers,
             so.intra_op_num_threads,
             so.inter_op_num_threads,
         )

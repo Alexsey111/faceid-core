@@ -124,6 +124,17 @@ class Settings(BaseSettings):
     MODELS_DIR: str = "D:/python projects/faceid-core"
     ONNX_INTRA_OP_THREADS: int = 2
     ONNX_INTER_OP_THREADS: int = 1
+    # Провайдеры ArcFace-энкодера. Варианты:
+    #   "auto"      → CUDA → DirectML → CPU (по доступности, с fallback)
+    #   "cuda"      → ["CUDAExecutionProvider","CPUExecutionProvider"]
+    #   "directml"  → ["DmlExecutionProvider","CPUExecutionProvider"]
+    #   "cpu"       → ["CPUExecutionProvider"]
+    #   явный csv   → напр. "CUDAExecutionProvider,CPUExecutionProvider"
+    # На машине без GPU (только CPUExecutionProvider) честно падает в CPU.
+    ONNX_ARCFACE_PROVIDERS: str = "auto"
+    # Путь к ArcFace recognition-модели относительно MODELS_DIR
+    # (детектор buffalo_l/scrfd — отдельный pack, им пользуется FaceAnalysis).
+    ARCFACE_MODEL_REL: str = "buffalo_l/w600k_r50.onnx"
 
     # -------------------------
     # Search backend

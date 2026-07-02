@@ -12,7 +12,7 @@ _batch_encoder: BatchEncoder | OnnxArcFaceEncoder | None = None
 def get_batch_encoder() -> BatchEncoder | OnnxArcFaceEncoder:
     global _batch_encoder
     if _batch_encoder is None:
-        model_path = Path(settings.MODELS_DIR) / "buffalo_l" / "w600k_r50.onnx"
+        model_path = Path(settings.MODELS_DIR) / settings.ARCFACE_MODEL_REL
         encoder = OnnxArcFaceEncoder(model_path)
         if settings.EMBED_BATCH_ENABLED:
             _batch_encoder = BatchEncoder(
