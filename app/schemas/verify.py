@@ -33,6 +33,15 @@ class VerifyResponse(BaseModel):
     # active-challenge liveness (turn/nod) через WS-стрим для подтверждения.
     challenge_recommended: Optional[bool] = None
 
+    # Liveness-диагностика: сырой real_score (softmax[idx1] yakhyo MiniFASNet).
+    liveness_score: Optional[float] = None
+
+    # Честные бинарные per-class вероятности: real_prob=softmax[idx1], spoof_prob=
+    # softmax[idx2]. idx0 (мёртвый класс) не выносим. Модель эффективно бинарная и
+    # НЕ различает print/replay/cutout — поэтому per-attack-type меток здесь нет
+    # (см. memory liveness-yakhyo-logit-semantics). Заполняется при require_liveness.
+    spoofing_indicators: Optional[dict[str, Any]] = None
+
     model_config = ConfigDict(
         json_schema_extra={
             "examples": [

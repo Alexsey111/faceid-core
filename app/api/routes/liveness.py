@@ -49,6 +49,9 @@ async def check_liveness(file: UploadFile = File(...)):
             "liveness": result["liveness"],
             "score": result["score"],
             "face_detected": result["face_detected"],
+            "spoofing_indicators": result.get(
+                "spoofing_indicators", {"real_prob": 0.0, "spoof_prob": 0.0}
+            ),
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

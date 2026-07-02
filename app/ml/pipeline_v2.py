@@ -237,6 +237,7 @@ class FacePipelineV2:
 
         liveness_passed = None
         liveness_score = None
+        liveness_spoof_score = None
         if settings.LIVENESS_ENABLED and self.liveness_checker:
             try:
                 t0 = now_perf_ns()
@@ -244,10 +245,11 @@ class FacePipelineV2:
                 # по raw bbox детектора (контракт yakhyo MiniFASNet, на нём AUC 0.97).
                 # НЕ передаём аффинно-выровненный face_input или прямоугольный roi —
                 # это сломает точность.
-                real_score, ok = self.liveness_checker.predict(image, raw_bbox)
+                probs, ok = self.liveness_checker.predict_probs(image, raw_bbox)
                 timings["liveness_ms"] = (now_perf_ns() - t0) / 1_000_000
-                liveness_score = real_score
-                liveness_passed = ok and real_score >= settings.LIVENESS_THRESHOLD
+                liveness_score = probs["real"]
+                liveness_spoof_score = probs["spoof"]
+                liveness_passed = ok and liveness_score >= settings.LIVENESS_THRESHOLD
 
                 if liveness_passed is False:
                     finalized_timings = _finalize_timings(timings)
@@ -256,6 +258,7 @@ class FacePipelineV2:
                         "status": "spoof",
                         "liveness_passed": False,
                         "liveness_score": liveness_score,
+                        "liveness_spoof_score": liveness_spoof_score,
                         "bbox": detection["bbox"],
                         "landmarks": detection.get("landmarks"),
                         "bbox_source": bbox_source,
@@ -267,6 +270,7 @@ class FacePipelineV2:
                 logger.warning("liveness_error: %s", str(e))
                 liveness_passed = None
                 liveness_score = None
+                liveness_spoof_score = None
 
         result = {
             "status": "ok",
@@ -275,6 +279,7 @@ class FacePipelineV2:
             "landmarks": detection.get("landmarks"),
             "liveness_passed": liveness_passed,
             "liveness_score": liveness_score,
+            "liveness_spoof_score": liveness_spoof_score,
             "bbox_source_detail": bbox_source_detail,
             "quality_warning": (
                 image_quality.details.get("quality_warning")
@@ -510,6 +515,7 @@ class FacePipelineV2:
         landmarks = prepared.get("landmarks")
         liveness_passed = prepared.get("liveness_passed")
         liveness_score = prepared.get("liveness_score")
+        liveness_spoof_score = prepared.get("liveness_spoof_score")
         quality_details = prepared.get("quality_details")
 
         stage_timings = StageTimings()
@@ -542,6 +548,7 @@ class FacePipelineV2:
             "landmarks": landmarks,
             "liveness_passed": liveness_passed,
             "liveness_score": liveness_score,
+            "liveness_spoof_score": liveness_spoof_score,
             "bbox_source": bbox_source,
             "quality_details": quality_details,
             "timings": finalized_timings,

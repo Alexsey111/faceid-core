@@ -286,6 +286,12 @@ class VerificationService:
             return {
                 "status": "spoof",
                 "liveness_passed": False,
+                "liveness_score": (
+                    float(liveness_score) if liveness_score is not None else None
+                ),
+                "liveness_spoof_score": float(
+                    result.get("liveness_spoof_score", 0.0) or 0.0
+                ),
                 "liveness": {
                     "score": liveness_score,
                     "risk": "spoof",
@@ -309,6 +315,7 @@ class VerificationService:
             "liveness": liveness,
             "liveness_passed": result.get("liveness_passed"),
             "liveness_score": result.get("liveness_score"),
+            "liveness_spoof_score": result.get("liveness_spoof_score"),
             "bbox": result.get("bbox"),
             "bbox_source": result.get("bbox_source"),
             "quality_details": result.get("quality_details"),
@@ -593,6 +600,9 @@ class VerificationService:
 
         if features.get("status") == "spoof":
             liveness_score = float(features.get("liveness_score", 0.0) or 0.0)
+            liveness_spoof_score = float(
+                features.get("liveness_spoof_score", 0.0) or 0.0
+            )
             liveness_risk = "spoof"
 
             await _store_verification_log_timed(
@@ -611,9 +621,14 @@ class VerificationService:
             return {
                 "status": "spoof_detected",
                 "liveness_passed": False,
+                "liveness_score": liveness_score,
                 "liveness": {
                     "score": liveness_score,
                     "risk": liveness_risk,
+                },
+                "spoofing_indicators": {
+                    "real_prob": liveness_score,
+                    "spoof_prob": liveness_spoof_score,
                 },
                 "replay_detected": replay_detected,
                 "bbox": features.get("bbox"),
@@ -651,6 +666,7 @@ class VerificationService:
         raw_liveness_signals = features.get("liveness")
         if raw_liveness_signals is None:
             liveness_score = float(features.get("liveness_score", 0.0) or 0.0)
+            liveness_spoof_score = float(features.get("liveness_spoof_score", 0.0) or 0.0)
             liveness_passed = features.get("liveness_passed")
             if liveness_passed is None:
                 liveness_passed = liveness_score >= settings.LIVENESS_THRESHOLD
@@ -674,6 +690,19 @@ class VerificationService:
 
             # LIVENESS CHECK
             liveness_passed = LivenessService.is_passed(liveness_signals)
+            # Composite-путь (legacy/active) не несёт per-class softmax из yakhyo —
+            # spoof-вероятность неизвестна, честно выставляем 0 в индикаторах.
+            liveness_spoof_score = 0.0
+
+        # Честные бинарные per-class вероятности для spoofing_indicators:
+        # real=softmax[idx1], spoof=softmax[idx2]. idx0 (мёртвый класс) не выносим
+        # (см. memory liveness-yakhyo-logit-semantics). Модель НЕ различает
+        # print/replay/cutout — поэтому возвращаем {real_prob, spoof_prob}, а не
+        # фантомные per-attack-type метки.
+        spoofing_indicators = {
+            "real_prob": float(liveness_score),
+            "spoof_prob": float(liveness_spoof_score),
+        }
         if require_liveness and not liveness_passed:
 
             await _store_verification_log_timed(
@@ -692,10 +721,12 @@ class VerificationService:
             return {
                 "status": "spoof_detected",
                 "liveness_passed": False,
+                "liveness_score": float(liveness_score),
                 "liveness": {
                     "score": liveness_score,
                     "risk": liveness_risk
                 },
+                "spoofing_indicators": spoofing_indicators,
                 "replay_detected": replay_detected,
                 "bbox": features.get("bbox"),
                 "bbox_source": features.get("bbox_source"),
@@ -834,6 +865,8 @@ class VerificationService:
             "similarity": float(decision_similarity),
             "margin": float(margin),
             "liveness_passed": liveness_passed,
+            "liveness_score": float(liveness_score) if liveness_score is not None else None,
+            "spoofing_indicators": spoofing_indicators,
             "replay_detected": replay_detected,
             "challenge_recommended": bool(challenge_recommended),
             "bbox": features.get("bbox"),

@@ -1347,6 +1347,10 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                         "status": "spoof_detected",
                         "liveness_passed": False,
                         "liveness_score": prepared.get("liveness_score"),
+                        "spoofing_indicators": {
+                            "real_prob": float(prepared.get("liveness_score", 0.0) or 0.0),
+                            "spoof_prob": float(prepared.get("liveness_spoof_score", 0.0) or 0.0),
+                        },
                         "replay_detected": False,
                         "error_code": "spoof_detected",
                         "bbox": prepared.get("bbox"),

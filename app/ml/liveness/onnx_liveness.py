@@ -81,19 +81,19 @@ class OnnxLivenessChecker:
         face = np.expand_dims(face, axis=0)
         return np.ascontiguousarray(face, dtype=np.float32)
 
-    def predict(self, image_bgr: np.ndarray, bbox_xyxy) -> Tuple[float, bool]:
-        """
-        Args:
-            image_bgr: полный кадр BGR uint8 (H, W, 3).
-            bbox_xyxy: (x1, y1, x2, y2) bbox детектора в координатах кадра.
+    def predict_probs(self, image_bgr: np.ndarray, bbox_xyxy) -> Tuple[dict, bool]:
+        """То же, что predict, но возвращает per-class вероятности для spoofing_indicators.
 
         Returns:
-            (real_score, ok): real_score = softmax(logits)[REAL_IDX] (чем выше,
-            тем «живее»); ok=False если кроп пуст (лицо не вырезано).
+            (probs, ok): probs = {"real": float, "spoof": float}. real = softmax[idx1]
+            (REAL_IDX), spoof = softmax[idx2]. idx0 — мёртвый класс модели (никогда не
+            активируется), в выход не выносим (см. memory liveness-yakhyo-logit-semantics:
+            модель бинарная real/spoof, НЕ различает print/replay/cutout). ok=False если
+            кроп пуст.
         """
         input_tensor = self._build_tensor(image_bgr, bbox_xyxy)
         if input_tensor is None:
-            return 0.0, False
+            return {"real": 0.0, "spoof": 0.0}, False
 
         outputs = self.session.run(None, {self.input_name: input_tensor})
         logits = np.asarray(outputs[0], dtype=np.float32)
@@ -104,5 +104,20 @@ class OnnxLivenessChecker:
                 f"unexpected liveness output shape {logits.shape}, expected (1, 3)"
             )
 
-        probs = _softmax(logits)
-        return float(probs[0, self.REAL_IDX]), True
+        probs = _softmax(logits)[0]
+        return {"real": float(probs[self.REAL_IDX]), "spoof": float(probs[2])}, True
+
+    def predict(self, image_bgr: np.ndarray, bbox_xyxy) -> Tuple[float, bool]:
+        """
+        Args:
+            image_bgr: полный кадр BGR uint8 (H, W, 3).
+            bbox_xyxy: (x1, y1, x2, y2) bbox детектора в координатах кадра.
+
+        Returns:
+            (real_score, ok): real_score = softmax(logits)[REAL_IDX] (чем выше,
+            тем «живее»); ok=False если кроп пуст (лицо не вырезано).
+        """
+        probs, ok = self.predict_probs(image_bgr, bbox_xyxy)
+        if not ok:
+            return 0.0, False
+        return probs["real"], True
