@@ -1,9 +1,49 @@
 # app/ml/preprocessing/image_preprocessor.py - Предобработка изображений
 
+import io
+
 import cv2
 import numpy as np
 
 from app.core.config import settings
+
+# HEIC/HEIF/AVIF не поддерживаются OpenCV — fallback через PIL+pillow-heif.
+# Регистрация opener'а ленивая (один раз), отсутствие пакета — graceful退化 в ValueError.
+_HEIF_REGISTERED: bool = False
+
+
+def _ensure_heif_support() -> bool:
+    """Зарегистрировать pillow-heif как PIL opener (lazy, single-use)."""
+    global _HEIF_REGISTERED
+    if _HEIF_REGISTERED:
+        return True
+    try:
+        import pillow_heif
+
+        pillow_heif.register_heif_opener()
+        _HEIF_REGISTERED = True
+        return True
+    except Exception:
+        return False
+
+
+def _decode_via_pil(image_bytes: bytes) -> np.ndarray | None:
+    """Fallback-декодер через PIL+pillow-heif (HEIC/HEIF/AVIF и др.).
+
+    Возвращает BGR uint8 (контракт OpenCV-пайплайна) или None при ошибке/
+    отсутствии pillow-heif.
+    """
+    if not _ensure_heif_support():
+        return None
+    try:
+        from PIL import Image
+
+        img = Image.open(io.BytesIO(image_bytes))
+        img = img.convert("RGB")
+        arr = np.asarray(img, dtype=np.uint8)              # (H, W, 3) RGB
+        return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+    except Exception:
+        return None
 
 
 class ImagePreprocessor:
@@ -18,10 +58,22 @@ class ImagePreprocessor:
 
     def decode(self, image_bytes: bytes) -> np.ndarray:
         """
-        Decode bytes into OpenCV image.
+        Decode bytes into OpenCV image (BGR uint8).
+
+        Сначала cv2.imdecode (быстрый путь для JPEG/PNG/WebP/BMP/TIFF).
+        Если OpenCV не смог (HEIC/HEIF/AVIF и прочие неподдерживаемые) —
+        fallback через PIL+pillow-heif с конвертацией RGB→BGR.
         """
-        np_arr = np.frombuffer(image_bytes, np.uint8)
-        image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        np_arr = np.frombuffer(image_bytes, np.uint8) if image_bytes else np.empty(0, np.uint8)
+        try:
+            image = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+        except cv2.error:
+            # пустой/битый буфер уходит в fallback (потенциально PIL-путь)
+            image = None
+
+        if image is None:
+            # cv2 не поддерживает HEIC/HEIF/AVIF — fallback через PIL+pillow-heif
+            image = _decode_via_pil(image_bytes)
 
         if image is None:
             raise ValueError("Invalid image file")
