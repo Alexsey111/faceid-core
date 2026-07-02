@@ -1,11 +1,13 @@
 # app/api/routes/verify_async.py
 
+import asyncio
 import base64
 import binascii
 import json
 import logging
 import os
 import time
+import uuid
 from contextlib import contextmanager
 from enum import StrEnum
 from time import perf_counter
@@ -17,6 +19,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 
 from app.core.timing import StageTimings, elapsed_ms, now_epoch_ns, now_perf_ns
+from app.infrastructure.minio_client import MinioClient
 from app.infrastructure.redis_client import redis_client
 from app.monitoring.metrics import (
     ERROR_COUNTER,
@@ -454,8 +457,39 @@ async def verify_async(http_request: Request):
         enqueue_start_ns = now_perf_ns()
         enqueued_at_ns = now_epoch_ns()
 
+        # MinIO upload (как sync-путь _enqueue_verify_job): plaintext base64 НЕ
+        # кладём в Redis-очередь (152-ФЗ — исходные фото не хранятся в очереди).
+        # Воркер скачивает по image_url и удаляет объект после обработки; lifecycle
+        # MinIO-cover на случай падения воркера.
+        object_name = f"verify_async/{uuid.uuid4().hex}/image.jpg"
+        minio_client = MinioClient()
+        uploaded = False
+        try:
+            await asyncio.to_thread(
+                minio_client.upload_image, object_name, image_bytes, "image/jpeg"
+            )
+            uploaded = True
+        except Exception as exc:
+            logger.exception(
+                "minio_upload_failed",
+                extra={"route": route, "request_id": request_id},
+            )
+            _raise_admission_rejected(
+                stage="enqueue",
+                reason=AdmissionRejectReason.ENQUEUE_ERROR,
+                status_code=503,
+                detail={
+                    "error": AdmissionRejectReason.ENQUEUE_ERROR.value,
+                    "error_type": type(exc).__name__,
+                },
+                request_id=request_id,
+                max_queue_size=VerifyJobQueue.max_queue_size(),
+                inflight_limit=VerifyJobQueue.inflight_limit(),
+                throughput_per_sec=VerifyJobQueue.async_throughput_per_sec(),
+            )
+
         enqueue_payload = {
-            "image_b64": normalized_b64,
+            "image_url": object_name,
             "user_id": payload.user_id,
             "require_liveness": payload.require_liveness,
             "accepted_at_ns": accepted_at_ns,
@@ -463,9 +497,11 @@ async def verify_async(http_request: Request):
         }
 
         with _observe_admission_stage("enqueue"):
+            enqueue_ok = False
             try:
                 with observe_ms(VERIFY_ASYNC_ENQUEUE_MS):
                     job_id = await VerifyJobQueue.enqueue_job(enqueue_payload, admission=decision)
+                enqueue_ok = True
             except AdmissionRejected:
                 raise
             except Exception as exc:
@@ -495,6 +531,18 @@ async def verify_async(http_request: Request):
                     inflight_limit=VerifyJobQueue.inflight_limit(),
                     throughput_per_sec=VerifyJobQueue.async_throughput_per_sec(),
                 )
+            finally:
+                # enqueue упал (overflow/ошибка) — удаляем загруженный объект,
+                # иначе утечка до срабатывания MinIO lifecycle.
+                if not enqueue_ok and uploaded:
+                    try:
+                        await asyncio.to_thread(minio_client.delete_image, object_name)
+                    except Exception:
+                        logger.warning(
+                            "minio_delete_failed_on_enqueue_error image_url=%s",
+                            object_name,
+                            exc_info=True,
+                        )
 
             timings.finish("enqueue_ms", enqueue_start_ns)
 

@@ -37,6 +37,20 @@ def test_verify_async_completion_includes_timings_and_timestamps(monkeypatch):
     monkeypatch.setattr(verify_result_store, "redis_client", fake_redis)
     monkeypatch.setattr(verify_async_route.redis_client, "llen", lambda *_: 0)
 
+    # MinIO mock: route загружает фото в MinIO перед enqueue (п.4 — plaintext
+    # base64 не кладётся в Redis-очередь). Реального MinIO в тесте нет.
+    class _FakeMinio:
+        def __init__(self):
+            pass
+
+        def upload_image(self, object_name, data, content_type="image/jpeg"):
+            pass
+
+        def delete_image(self, object_name):
+            pass
+
+    monkeypatch.setattr(verify_async_route, "MinioClient", _FakeMinio)
+
     async def fake_enqueue_job(payload: dict[str, object]) -> str:
         job_id = "job-test-1"
         VerifyResultStore.set_done(

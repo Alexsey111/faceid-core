@@ -1,6 +1,5 @@
 # app/workers/verify_worker.py
 
-import base64
 import asyncio
 import json
 import logging
@@ -20,6 +19,7 @@ from app.db.repositories.verification_repo import VerificationRepository
 from app.core.config import settings
 from app.core.logging import setup_logging
 from app.db.session import AsyncSessionLocal
+from app.infrastructure.minio_client import MinioClient
 from app.monitoring.metrics import (
     ASYNC_JOB_COMPLETED_TOTAL,
     ASYNC_JOB_EXPIRED_TOTAL,
@@ -132,15 +132,40 @@ def _log_service_runtime_snapshot() -> None:
 
 
 def _decode_job_payload_sync(
-    image_b64: str,
+    image_url: str,
 ) -> tuple[bytes, np.ndarray | None, dict[str, float]]:
+    """Скачать image_url из MinIO → декодировать → downscale.
+
+    Plaintext base64 НЕ лежит в Redis-очереди (152-ФЗ): route загружает фото в
+    MinIO и передаёт только object_name. Байты скачиваются здесь и живут только
+    в памяти воркера до завершения обработки.
+    """
     t0 = perf_counter()
-    original_image_bytes = base64.b64decode(image_b64)
-    b64_decode_ms = (perf_counter() - t0) * 1000.0
+    minio_client = MinioClient()
+    original_image_bytes = minio_client.get_image(image_url)
+    minio_download_ms = (perf_counter() - t0) * 1000.0
 
     image, worker_pre_timings = _decode_and_downscale_image(original_image_bytes)
-    worker_pre_timings["b64_decode_ms"] = b64_decode_ms
+    worker_pre_timings["minio_download_ms"] = minio_download_ms
     return original_image_bytes, image, worker_pre_timings
+
+
+def _cleanup_minio_image(image_url: str | None, job_id: str, stage: str = "worker") -> None:
+    """Best-effort удаление исходного фото из MinIO после обработки воркером.
+
+    Молчит при отсутствии image_url (legacy/битый payload) и при ошибке удаления
+    (MinIO lifecycle-cover — резервная очистка). См. sync-путь verify_task.py.
+    """
+    if not image_url:
+        return
+    try:
+        MinioClient().delete_image(image_url)
+    except Exception:
+        logger.warning(
+            "minio_delete_failed job_id=%s image_url=%s stage=%s",
+            job_id, image_url, stage,
+            exc_info=True,
+        )
 
 
 def _prepare_face_inputs_sync(
@@ -955,6 +980,11 @@ async def collect_batch() -> list[dict[str, Any]]:
         created_at = float(job.get("created_at", claim_at))
         if _is_job_stale(created_at, claim_at):
             _reject_stale_job(job["job_id"], created_at, claim_at)
+            _cleanup_minio_image(
+                job.get("payload", {}).get("image_url"),
+                job["job_id"],
+                stage="stale",
+            )
             continue
 
         WORKER_IDLE_GAP_MS.observe(idle_gap_ms)
@@ -982,6 +1012,11 @@ async def collect_batch() -> list[dict[str, Any]]:
         created_at = float(job.get("created_at", claim_at))
         if _is_job_stale(created_at, claim_at):
             _reject_stale_job(job["job_id"], created_at, claim_at)
+            _cleanup_minio_image(
+                job.get("payload", {}).get("image_url"),
+                job["job_id"],
+                stage="stale",
+            )
             continue
 
         jobs.append(job)
@@ -1068,7 +1103,7 @@ async def process_batch(job_datas: list[dict[str, Any]]):
             try:
                 original_image_bytes, image, worker_pre_timings = await asyncio.to_thread(
                     _decode_job_payload_sync,
-                    payload["image_b64"],
+                    payload.get("image_url"),
                 )
                 first_claim_at_for_job = float(job_data.get("first_claim_at", dequeued_at))
                 worker_pre_timings["batch_collect_wait_ms"] = max(
@@ -1636,9 +1671,18 @@ async def process_batch(job_datas: list[dict[str, Any]]):
 
     finally:
         WORKER_ACTIVE_BATCHES.dec()
-
-
-async def run_worker():
+        # Удаление исходных фото из MinIO после обработки (любой исход: success,
+        # quality_reject, spoof, processing_failed, error). Best-effort —
+        # MinIO lifecycle-cover на случай падения воркера mid-batch.
+        for _job in job_datas:
+            try:
+                _cleanup_minio_image(
+                    _job.get("payload", {}).get("image_url"),
+                    _job.get("job_id", ""),
+                    stage="process_batch",
+                )
+            except Exception:
+                pass
     cv2.setNumThreads(1)
     cv2.ocl.setUseOpenCL(False)
     start_http_server(9101)

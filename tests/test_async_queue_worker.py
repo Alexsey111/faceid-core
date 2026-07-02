@@ -280,7 +280,7 @@ async def test_verify_job_queue_enqueue(monkeypatch):
     monkeypatch.setattr(verify_job_queue.time, "time", lambda: 123.456)
 
     job_id = verify_job_queue.VerifyJobQueue.enqueue(
-        {"image_b64": "abc", "user_id": "7", "require_liveness": True}
+        {"image_url": "verify_async/job-123/image.jpg", "user_id": "7", "require_liveness": True}
     )
 
     assert job_id == "job-123"
@@ -305,7 +305,29 @@ async def test_verify_async_route_enqueues(monkeypatch):
     assert ok
     image_b64 = base64.b64encode(encoded.tobytes()).decode("utf-8")
 
-    def fake_enqueue(payload):
+    # MinIO mock: route загружает фото в MinIO, в payload идёт image_url (не base64)
+    class _FakeMinio:
+        def __init__(self):
+            self.uploaded = []
+
+        def upload_image(self, object_name, data, content_type="image/jpeg"):
+            self.uploaded.append((object_name, data))
+
+        def delete_image(self, object_name):
+            pass
+
+    fake_minio = _FakeMinio()
+    monkeypatch.setattr(verify_async_route, "MinioClient", lambda *a, **kw: fake_minio)
+
+    async def fake_evaluate_admission():
+        return verify_job_queue.AdmissionDecision(accepted=True, reason="accepted")
+
+    monkeypatch.setattr(
+        verify_async_route.VerifyJobQueue, "evaluate_admission",
+        staticmethod(fake_evaluate_admission),
+    )
+
+    def fake_enqueue(payload, admission=None):
         captured["payload"] = payload
         return "job-xyz"
 
@@ -341,11 +363,17 @@ async def test_verify_async_route_enqueues(monkeypatch):
     result = await verify_async_route.verify_async(request)
 
     assert result == {"job_id": "job-xyz", "status": "queued"}
-    assert captured["payload"] == {
-        "image_b64": image_b64,
-        "user_id": "42",
-        "require_liveness": True,
-    }
+    # photo загружено в MinIO
+    assert len(fake_minio.uploaded) == 1
+    up_name, up_bytes = fake_minio.uploaded[0]
+    assert up_name.startswith("verify_async/")
+    # payload: image_url есть, plaintext image_b64 отсутствует (152-ФЗ)
+    payload = captured["payload"]
+    assert payload["image_url"] == up_name
+    assert "image_b64" not in payload
+    assert payload["user_id"] == "42"
+    assert payload["require_liveness"] is True
+    assert "accepted_at_ns" in payload and "enqueued_at_ns" in payload
 
 
 @pytest.mark.asyncio
@@ -555,7 +583,7 @@ async def test_verify_worker_run_worker_processes_one_job(monkeypatch):
         [
             {
                 "job_id": "job-3",
-                "payload": {"image_b64": base64.b64encode(b"image-bytes").decode("utf-8")},
+                "payload": {"image_url": "verify_async/job-3/image.jpg"},
             }
         ]
     ]
@@ -577,7 +605,7 @@ async def test_verify_worker_run_worker_processes_one_job(monkeypatch):
         await verify_worker.run_worker()
 
     assert seen["job_data"][0]["job_id"] == "job-3"
-    assert seen["job_data"][0]["payload"]["image_b64"]
+    assert seen["job_data"][0]["payload"]["image_url"]
 
 
 @pytest.mark.asyncio
