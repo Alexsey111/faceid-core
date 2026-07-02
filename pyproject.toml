@@ -33,6 +33,7 @@ dependencies = [
     # Testing
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
+    "pytest-cov>=7.0.0",
     "httpx>=0.27.0",
 ]
 
@@ -48,6 +49,33 @@ asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 markers = [
     "timeout: timeout for long-running tests"
+]
+
+# -------------------------
+# Coverage
+# -------------------------
+# Измерение:  pytest --cov=app --cov-branch --cov-report=term-missing --cov-report=html
+# Gate (CI):  pytest --cov=app --cov-branch --cov-fail-under=90   (KPI CLAUDE.md ≥90%)
+# fail_under НЕ зашит в конфиг — чтобы `pytest --cov` на частичных прогонах
+# (только -m unit) не падал. Gate задаётся явным --cov-fail-under в CI на полном
+# suite (unit+integration). Текущее покрытие: ~39% unit-only, выше с integration.
+[tool.coverage.run]
+source = ["app"]
+branch = true
+omit = [
+    "*/__pycache__/*",
+    "app/db/migrations/*",
+    "tests/*",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if __name__ == .__main__.:",
+    "if TYPE_CHECKING:",
 ]
 
 [tool.pyright]

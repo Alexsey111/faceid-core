@@ -1,0 +1,45 @@
+# requirements-gpu.txt — вариант requirements.txt для CUDA-хостов.
+# Отличия от requirements.txt:
+#   - onnxruntime → onnxruntime-gpu (CUDA 11.8 / cuDNN 8); энкодер ArcFace и
+#     SCRFD-детектор уходят на CUDAExecutionProvider (см. app/ml/runtime.py,
+#     app/ml/embedding/onnx_arcface_encoder.py, settings.ONNX_ARCFACE_PROVIDERS).
+#   - opencv-python-headless оставлен (без GUI-зависимостей).
+# Держите версии синхронно с requirements.txt при обновлениях.
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+
+pydantic==2.7.1
+pydantic-settings==2.2.1
+
+sqlalchemy==2.0.30
+psycopg2-binary==2.9.9
+asyncpg==0.29.0
+pgvector==0.2.5
+
+redis==5.0.4
+celery==5.4.0
+prometheus-client==0.18.0
+
+python-multipart==0.0.9
+aiofiles==23.2.1
+
+numpy==1.26.4
+opencv-python-headless==4.9.0.80
+
+insightface==0.7.3
+onnxruntime-gpu==1.18.0
+onnx==1.16.0
+
+minio==7.2.5
+
+python-dotenv==1.0.1
+loguru==0.7.2
+cryptography==41.0.4
+pyjwt==2.8.0
+
+faiss-cpu==1.7.4
+
+alembic==1.13.1
+
+pytest==9.0.2
+pytest-asyncio==1.3.0

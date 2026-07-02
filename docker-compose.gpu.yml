@@ -1,0 +1,55 @@
+# docker-compose.gpu.yml — production override для CUDA-хостов.
+#
+# Применять вместе с базовым файлом:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+# Что делает:
+#   - переключает api/worker на GPU-образы (nvidia/cuda 11.8 + cuDNN 8,
+#     onnxruntime-gpu) — см. infrastructure/docker/*.gpu.Dockerfile;
+#   - резервирует GPU-устройство (deploy.resources.reservations.devices);
+#   - выставляет ONNX_ARCFACE_PROVIDERS=cuda (энкодер на CUDAExecutionProvider;
+#     fallback на CPU остаётся в коде: app/ml/embedding/onnx_arcface_encoder.py,
+#     app/ml/runtime.py);
+#   - поднимает батчинг эмбеддингов под GPU (больший батч окупается).
+#
+# Требования к хосту: NVIDIA driver + nvidia-container-toolkit
+# (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/).
+# Проверка: docker run --rm --gpus all nvidia/cuda:11.8.0-cudnn8-runtime-ubuntu22.04 nvidia-smi
+#
+# На dev-машине без NVIDIA CUDA этот файл НЕ используется (см. memory
+# hw-no-cuda-gpu / dev-vs-prod-hardware) — базовый compose работает на CPU.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/api.gpu.Dockerfile
+    environment:
+      - ONNX_ARCFACE_PROVIDERS=cuda
+      - EMBED_BATCH_SIZE=32
+      - EMBED_BATCH_TIMEOUT_MS=20
+      - ONNX_INTRA_OP_THREADS=0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  worker:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/worker.gpu.Dockerfile
+    environment:
+      - ONNX_ARCFACE_PROVIDERS=cuda
+      - EMBED_BATCH_SIZE=16
+      - BATCH_SIZE=8
+      - ONNX_INTRA_OP_THREADS=0
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
