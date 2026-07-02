@@ -138,6 +138,50 @@ curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
 При окклюзии (маска/очки) — `status="retry"`, `reason="remove_occlusion"`: клиент
 просит снять окклюзию и пере-вызывает `/verify`.
 
+### Active liveness gate (high-security admission)
+
+Passive-модель MiniFASNetV2 **не различает cutout-атаку** (фото с вырезом /
+маска из распечатки) — cutout классифицируется как `real` P=0.976. Для допуска
+на объект (high-security) допуск по passive небезопасен. Решение — **active
+challenge как обязательный gate**: при `require_liveness=true` и
+`LIVENESS_ACTIVE_REQUIRED=true` допуск выдаётся **только** через active proof
+(`liveness_token` из WS-challenge). Cutout/print — статичны, действия не
+выполняют → `is_live=False` → токен не выдаётся → `/verify` без токена → 403.
+
+Env (high-security deploy):
+```
+LIVENESS_ENABLED=true
+LIVENESS_ACTIVE_ENABLED=true
+LIVENESS_ACTIVE_REQUIRED=true
+```
+
+Smoke-flow active-допуска:
+```bash
+# 1) init — получить challenge_id + ws_token + actions
+curl -s -H "Authorization: Bearer $TOKEN" \
+  http://localhost:8080/api/v1/liveness/challenge/init
+# 2) WS /api/v1/liveness/challenge/stream?challenge_id=...&ws_token=... —
+#    клиент стримит кадры, выполняя actions (turn/nod/blink) → result + liveness_token
+# 3) verify с active proof
+curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"user_id":"ext_smoke_1","image":"<base64-jpeg>","require_liveness":true,
+       "liveness_mode":"active","liveness_token":"<token>"}' \
+  http://localhost:8080/api/v1/verify_base64
+# → liveness_passed=true (active proof); passive-скор не влияет
+```
+
+При `require_liveness=true` **без** active proof (passive) → `403
+active_liveness_required` с инструкцией пройти challenge.
+
+**Носители active proof**: только `/verify_base64` (sync fast-path, онлайн-допуск)
+принимает `liveness_mode=active` + `liveness_token`. `/verify` (multipart),
+`/verify_async_file` и `/verify_async` не несут токен — при
+`LIVENESS_ACTIVE_REQUIRED=true` и `require_liveness=true` они возвращают 403 с
+направлением на `/verify_base64`; для access-control их использовать не нужно.
+
+`LIVENESS_ACTIVE_REQUIRED` default `false` (backward-compat; passive-допуск
+разрешён). High-security deploys обязаны ставить `true`.
+
 Проверка контракта API: `python -m pytest tests/unit/test_api_contract.py -q`.
 
 ---

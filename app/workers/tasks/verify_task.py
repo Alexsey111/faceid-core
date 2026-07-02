@@ -510,6 +510,24 @@ def process_verify_job(
     require_liveness: bool = False,
     request_received_time: float | None = None,
 ):
+    # Defense-in-depth active-challenge gate: прямой enqueue в очередь (минуя
+    # роуты с route-gate) с require_liveness=true при LIVENESS_ACTIVE_REQUIRED=true
+    # — это passive-допуск, который ложит physical-spoof (cutout/print). Маркируем
+    # job failed БЕЗ retry (легитимные active-запросы приходят с require_liveness=False).
+    if require_liveness and settings.LIVENESS_ACTIVE_REQUIRED:
+        logger.error(
+            "active_liveness_required job_id=%s — passive admission rejected by policy",
+            job_id,
+        )
+        run_worker_coroutine(
+            _mark_verify_job_failed(
+                job_id,
+                image_url,
+                "active_liveness_required: use /api/v1/verify_base64 with "
+                "liveness_mode=active + liveness_token",
+            )
+        )
+        return
     try:
         run_worker_coroutine(
             _process_verify_job(job_id, image_url, user_id, require_liveness, request_received_time)

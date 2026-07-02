@@ -10,6 +10,7 @@ import pytest
 from fastapi import HTTPException
 
 import app.services.liveness_token as lt
+from app.core.config import settings
 from app.api.routes.verify import _resolve_liveness
 from app.schemas.verify import VerifyRequest
 
@@ -91,3 +92,53 @@ def test_passive_mode_passes_through_and_does_not_consume(fake_redis):
     # неизвестный режим трактуется как passive (не падает, не потребляет token)
     eff_req2, active_proven2 = _resolve_liveness(_req("weird", require_liveness=False))
     assert eff_req2 is False and active_proven2 is False
+
+
+# --- LIVENESS_ACTIVE_REQUIRED gate (cutout/physical-spoof защита) ---
+# При require_liveness=true и LIVENESS_ACTIVE_REQUIRED=true допуск требует
+# active proof; passive-запрос → 403 active_liveness_required.
+
+@_unit
+def test_passive_rejected_when_active_required(fake_redis, monkeypatch):
+    monkeypatch.setattr(settings, "LIVENESS_ACTIVE_REQUIRED", True)
+    with pytest.raises(HTTPException) as exc:
+        _resolve_liveness(_req("passive", require_liveness=True))
+    assert exc.value.status_code == 403
+    assert "active_liveness_required" in exc.value.detail
+
+
+@_unit
+def test_active_still_works_when_required(fake_redis, monkeypatch):
+    # active proof валиден и при required=true — consume OK, passive не запускается
+    monkeypatch.setattr(settings, "LIVENESS_ACTIVE_REQUIRED", True)
+    token = lt.issue_liveness_token("ch-req-1")
+    eff_req, active_proven = _resolve_liveness(_req("active", token, require_liveness=True))
+    assert eff_req is False and active_proven is True
+    # single-use: повторно тем же token → 403
+    with pytest.raises(HTTPException):
+        _resolve_liveness(_req("active", token, require_liveness=True))
+
+
+@_unit
+def test_passive_allowed_when_not_required(fake_redis, monkeypatch):
+    # default LIVENESS_ACTIVE_REQUIRED=False → passive пропуск как раньше
+    monkeypatch.setattr(settings, "LIVENESS_ACTIVE_REQUIRED", False)
+    eff_req, active_proven = _resolve_liveness(_req("passive", require_liveness=True))
+    assert eff_req is True and active_proven is False
+
+
+@_unit
+def test_no_liveness_not_gated(fake_redis, monkeypatch):
+    # require_liveness=false → gate не срабатывает даже при required=true
+    monkeypatch.setattr(settings, "LIVENESS_ACTIVE_REQUIRED", True)
+    eff_req, active_proven = _resolve_liveness(_req("passive", require_liveness=False))
+    assert eff_req is False and active_proven is False
+
+
+@_unit
+def test_unknown_mode_rejected_when_required(fake_redis, monkeypatch):
+    # неизвестный режим трактуется как passive → гейтится при required=true
+    monkeypatch.setattr(settings, "LIVENESS_ACTIVE_REQUIRED", True)
+    with pytest.raises(HTTPException) as exc:
+        _resolve_liveness(_req("weird", require_liveness=True))
+    assert exc.value.status_code == 403

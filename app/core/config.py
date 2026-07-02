@@ -221,6 +221,14 @@ class Settings(BaseSettings):
     # Feature-flag активного challenge-протокола (WS-стрим). Passive /liveness
     # работает независимо от этого флага.
     LIVENESS_ACTIVE_ENABLED: bool = False
+    # Обязательный active-challenge gate допуска: если True — /verify с
+    # require_liveness=true принимает ТОЛЬКО active proof (liveness_token из
+    # /liveness/challenge/stream); passive-запрос на допуск → 403
+    # active_liveness_required. Закрывает physical-spoof (cutout/print/replay),
+    # который ложит passive-модель MiniFASNetV2 (cutout→real P=0.976). Default
+    # False (backward-compat); high-security deploys ставят true в env
+    # (требует также LIVENESS_ACTIVE_ENABLED=true).
+    LIVENESS_ACTIVE_REQUIRED: bool = False
     LIVENESS_CHALLENGE_TTL_S: int = 60     # окно на запись/стрим видео после /init
     LIVENESS_TOKEN_TTL_S: int = 120        # окно действия liveness_token в /verify
     LIVENESS_CHALLENGE_ACTIONS: int = 2    # сколько действий в challenge

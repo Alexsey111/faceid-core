@@ -107,6 +107,20 @@ def _resolve_liveness(request: VerifyRequest) -> tuple[bool, bool]:
             )
         logger.info("active_liveness_verified token consumed")
         return False, True
+    # Active-challenge gate допуска: при require_liveness=true и
+    # LIVENESS_ACTIVE_REQUIRED=true — passive-запрос на допуск отвергается
+    # (physical-spoof cutout/print ложит passive-модель; active challenge их
+    # отбрасывает). Направляем клиента пройти /liveness/challenge и повторить с
+    # liveness_mode=active. require_liveness=false гейт не затрагивает.
+    if request.require_liveness and settings.LIVENESS_ACTIVE_REQUIRED:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "active_liveness_required: call /api/v1/liveness/challenge/init then "
+                "WS /api/v1/liveness/challenge/stream to obtain liveness_token, "
+                "retry /verify with liveness_mode=active"
+            ),
+        )
     return request.require_liveness, False
 
 
@@ -391,6 +405,18 @@ async def verify_async(
     db: AsyncSession = Depends(get_db),
 ):
     """Production async verify: file -> MinIO -> queue -> worker."""
+    # Active-challenge gate допуска: multipart-путь не несёт liveness_token,
+    # поэтому при LIVENESS_ACTIVE_REQUIRED=true и require_liveness=true — сразу
+    # 403 с направлением на /verify_base64 (active proof работает там). До
+    # резервирования slot'а, чтобы не резервировать чтобы тут же сбросить.
+    if require_liveness and settings.LIVENESS_ACTIVE_REQUIRED:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "active_liveness_required: multipart path does not carry liveness_token; "
+                "use /api/v1/verify_base64 with liveness_mode=active + liveness_token"
+            ),
+        )
     slot_reserved = False
     slot_reserved = try_reserve_slot(max_queue_delay_ms=float(settings.BACKPRESSURE_MAX_QUEUE_DELAY_MS))
     if not slot_reserved:

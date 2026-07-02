@@ -18,6 +18,7 @@ import numpy as np
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 
+from app.core.config import settings
 from app.core.timing import StageTimings, elapsed_ms, now_epoch_ns, now_perf_ns
 from app.infrastructure.minio_client import MinioClient
 from app.infrastructure.redis_client import redis_client
@@ -298,6 +299,20 @@ async def verify_async(http_request: Request):
                         detail={"error": AdmissionRejectReason.INVALID_REQUEST.value},
                         request_id=request_id,
                     )
+
+        # Active-challenge gate допуска: /verify_async не несёт liveness_token
+        # (схема VerifyAsyncRequest без liveness_mode/token). При
+        # LIVENESS_ACTIVE_REQUIRED=true и require_liveness=true — 403 с
+        # направлением на /verify_base64 (active proof работает там). До
+        # base64-decode и MinIO-upload, чтобы не делать работу ради отказа.
+        if payload.require_liveness and settings.LIVENESS_ACTIVE_REQUIRED:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "active_liveness_required: this path does not carry liveness_token; "
+                    "use /api/v1/verify_base64 with liveness_mode=active + liveness_token"
+                ),
+            )
 
         current_stage = "base64_decode"
         with _observe_admission_stage("base64_decode"):
