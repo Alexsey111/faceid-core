@@ -168,7 +168,9 @@ def create_app() -> FastAPI:
 
     app.middleware("http")(request_id_middleware)
     app.middleware("http")(metrics_middleware)
-    app.include_router(router)
+    # Все бизнес-эндпоинты под /api/v1 (ТЗ 4): /api/v1/verify, /api/v1/liveness,
+    # /api/v1/upload и т.д. Health/ready/docs остаются без префикса (оркестратор).
+    app.include_router(router, prefix="/api/v1")
     app.include_router(health_router)
 
     return app

@@ -24,14 +24,14 @@ async def test_e2e_same_person():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.post(
-            "/upload",
+            "/api/v1/upload",
             params={"user_id": "123"},
             files={"file": ("person1.jpg", TEST_IMAGE_1.read_bytes(), "image/jpeg")},
         )
         assert r.status_code == 200
 
         r = await client.post(
-            "/verify",
+            "/api/v1/verify",
             params={"user_id": "123"},
             files={"file": ("person1_2.jpg", TEST_IMAGE_2.read_bytes(), "image/jpeg")},
         )
@@ -51,7 +51,7 @@ async def test_e2e_different_person():
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         r = await client.post(
-            "/verify",
+            "/api/v1/verify",
             params={"user_id": "456"},
             files={"file": ("person2.jpg", TEST_IMAGE_OTHER.read_bytes(), "image/jpeg")},
         )

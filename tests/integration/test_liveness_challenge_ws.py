@@ -86,7 +86,7 @@ def app_client(monkeypatch):
     monkeypatch.setattr(settings, "LIVENESS_ACTIVE_ENABLED", True)
 
     app = FastAPI()
-    app.include_router(route.router)
+    app.include_router(route.router, prefix="/api/v1")
     # сбрасываем ленивый _ML на случай загрязнения от прошлых тестов
     monkeypatch.setattr(route, "_ML", None)
     with TestClient(app) as client:
@@ -94,7 +94,7 @@ def app_client(monkeypatch):
 
 
 def _init(client) -> dict:
-    resp = client.post("/liveness/challenge/init")
+    resp = client.post("/api/v1/liveness/challenge/init")
     assert resp.status_code == 200, resp.text
     return resp.json()
 
@@ -103,7 +103,7 @@ def test_init_returns_challenge_and_ws_url(app_client):
     client, _ = app_client
     data = _init(client)
     assert "challenge_id" in data and "ws_token" in data and "actions" in data
-    assert data["ws_url"].startswith("/liveness/challenge/stream?")
+    assert data["ws_url"].startswith("/api/v1/liveness/challenge/stream?")
     assert 1 <= len(data["actions"]) <= settings.LIVENESS_CHALLENGE_ACTIONS
 
 
@@ -114,7 +114,7 @@ def test_stream_static_frames_not_live_no_token(app_client):
     cid, ws_token = init_data["challenge_id"], init_data["ws_token"]
 
     with client.websocket_connect(
-        f"/liveness/challenge/stream?challenge_id={cid}&ws_token={ws_token}"
+        f"/api/v1/liveness/challenge/stream?challenge_id={cid}&ws_token={ws_token}"
     ) as ws:
         challenge_msg = ws.receive_json()
         assert challenge_msg["type"] == "challenge"
@@ -146,7 +146,7 @@ def test_stream_happy_path_issues_single_use_token(app_client, monkeypatch):
     cid, ws_token = init_data["challenge_id"], init_data["ws_token"]
 
     with client.websocket_connect(
-        f"/liveness/challenge/stream?challenge_id={cid}&ws_token={ws_token}"
+        f"/api/v1/liveness/challenge/stream?challenge_id={cid}&ws_token={ws_token}"
     ) as ws:
         ws.receive_json()  # challenge
         ws.send_bytes(_jpeg_bytes())
@@ -174,7 +174,7 @@ def test_challenge_is_single_use_after_stream(app_client, monkeypatch):
     cid, ws_token = init_data["challenge_id"], init_data["ws_token"]
 
     with client.websocket_connect(
-        f"/liveness/challenge/stream?challenge_id={cid}&ws_token={ws_token}"
+        f"/api/v1/liveness/challenge/stream?challenge_id={cid}&ws_token={ws_token}"
     ) as ws:
         ws.receive_json()
         ws.send_bytes(_jpeg_bytes())
@@ -184,6 +184,6 @@ def test_challenge_is_single_use_after_stream(app_client, monkeypatch):
     # повторный стрим тем же challenge_id — должен быть отвергнут
     with pytest.raises(Exception):
         with client.websocket_connect(
-            f"/liveness/challenge/stream?challenge_id={cid}&ws_token={ws_token}"
+            f"/api/v1/liveness/challenge/stream?challenge_id={cid}&ws_token={ws_token}"
         ) as ws2:
             ws2.receive_json()  # сервер закрывает до challenge-сообщения

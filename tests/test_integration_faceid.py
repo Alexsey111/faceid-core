@@ -37,7 +37,7 @@ async def test_enroll_and_verify():
         with open(TEST_IMAGE, "rb") as f:
 
             verify = await ac.post(
-                "/verify",
+                "/api/v1/verify",
                 files={"file": (TEST_IMAGE.name, f, "image/jpeg")}
             )
 

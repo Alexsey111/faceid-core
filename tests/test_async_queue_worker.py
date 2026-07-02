@@ -348,7 +348,7 @@ async def test_verify_async_route_enqueues(monkeypatch):
         {
             "type": "http",
             "method": "POST",
-            "path": "/verify_async",
+            "path": "/api/v1/verify_async",
             "headers": [],
             "query_string": b"",
             "client": ("testclient", 12345),

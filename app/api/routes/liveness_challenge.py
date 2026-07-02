@@ -85,7 +85,7 @@ async def init_challenge(_auth: dict = Depends(require_auth)):
         "challenge_id": cid,
         "actions": actions,
         "ws_token": ws_token,
-        "ws_url": f"/liveness/challenge/stream?challenge_id={cid}&ws_token={ws_token}",
+        "ws_url": f"/api/v1/liveness/challenge/stream?challenge_id={cid}&ws_token={ws_token}",
         "expires_at": _iso(settings.LIVENESS_CHALLENGE_TTL_S),
     }
 

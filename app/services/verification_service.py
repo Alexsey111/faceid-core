@@ -75,6 +75,29 @@ def _log_extra(job_id: Optional[str], **fields: Any) -> dict[str, Any]:
     return extra
 
 
+# Статусы, для которых считается match-решение → confidence (high/medium/low)
+# имеет смысл. Для остальных (spoof/quality_reject/retry/processing_failed)
+# match не считался → confidence=None.
+_DECISION_STATUSES = {"match", "low_confidence", "no_match"}
+
+
+def _confidence_label(similarity: float | None, status: str | None) -> Optional[str]:
+    """Метка confidence по match_score и статусу: high / medium / low / None.
+
+    high   — match (similarity ≥ HIGH_THRESHOLD=0.6)
+    medium — low_confidence (LOW_THRESHOLD ≤ similarity < HIGH_THRESHOLD)
+    low    — no_match (similarity < LOW_THRESHOLD=0.3)
+    None   — match не считался (spoof/quality_reject/retry/processing_failed).
+    """
+    if status not in _DECISION_STATUSES or similarity is None:
+        return None
+    if similarity >= settings.HIGH_THRESHOLD:
+        return "high"
+    if similarity >= settings.LOW_THRESHOLD:
+        return "medium"
+    return "low"
+
+
 def _observe_stage(stage: str, duration_ms: float) -> None:
     if METRICS_ENABLED:
         try:
@@ -538,6 +561,8 @@ class VerificationService:
                 "reason": reason,
                 "quality_details": features.get("quality_details", {}),
                 "error_code": reason,
+                "match_score": None,
+                "confidence": None,
                 "liveness_passed": None,
                 "replay_detected": replay_detected,
                 "bbox": features.get("bbox"),
@@ -590,6 +615,8 @@ class VerificationService:
                 "reason": reason,
                 "quality_details": features.get("quality_details", {}),
                 "error_code": reason or "quality_reject",
+                "match_score": None,
+                "confidence": None,
                 "liveness_passed": None,
                 "replay_detected": replay_detected,
                 "bbox": features.get("bbox"),
@@ -622,6 +649,9 @@ class VerificationService:
                 "status": "spoof_detected",
                 "liveness_passed": False,
                 "liveness_score": liveness_score,
+                "match_score": 0.0,
+                "similarity": 0.0,
+                "confidence": None,
                 "liveness": {
                     "score": liveness_score,
                     "risk": liveness_risk,
@@ -722,6 +752,9 @@ class VerificationService:
                 "status": "spoof_detected",
                 "liveness_passed": False,
                 "liveness_score": float(liveness_score),
+                "match_score": 0.0,
+                "similarity": 0.0,
+                "confidence": None,
                 "liveness": {
                     "score": liveness_score,
                     "risk": liveness_risk
@@ -863,6 +896,8 @@ class VerificationService:
             "status": decision_status,
             "user_id": decision_user_id if decision_status == "match" else None,
             "similarity": float(decision_similarity),
+            "match_score": float(decision_similarity),
+            "confidence": _confidence_label(decision_similarity, decision_status),
             "margin": float(margin),
             "liveness_passed": liveness_passed,
             "liveness_score": float(liveness_score) if liveness_score is not None else None,
@@ -907,6 +942,8 @@ class VerificationService:
                 "status": result_status,
                 "error_code": error_code,
                 "similarity": 0.0,
+                "match_score": 0.0,
+                "confidence": _confidence_label(0.0, result_status),
                 "liveness_passed": None,
                 "replay_detected": False,
             }
@@ -934,6 +971,8 @@ class VerificationService:
             return {
                 "status": "processing_failed",
                 "error_code": error_code,
+                "match_score": None,
+                "confidence": None,
                 "liveness_passed": False,
                 "replay_detected": False,
             }

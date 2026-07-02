@@ -242,6 +242,12 @@ class Settings(BaseSettings):
     HIGH_THRESHOLD: float = 0.60
     LOW_THRESHOLD: float = 0.30
     MARGIN_THRESHOLD: float = 0.10
+    # Pre-filter поиска в SearchService: кандидаты ниже этого порога отбрасываются
+    # до top-k/decision. Выровнен с LOW_THRESHOLD (no_match), а НЕ с HIGH_THRESHOLD:
+    # pre-filter должен срезать только явные no_match (<0.3), оставляя весь
+    # low_confidence-диапазон (0.3–0.6) достижимым для make_decision. Раньше был
+    # скрытый fallback getattr(settings, "SIM_THRESHOLD", 0.5) — «съедал» 0.3–0.5.
+    SIM_THRESHOLD: float = 0.30
 
     # -------------------------
     # Security

@@ -68,7 +68,7 @@ class SearchService:
     ) -> List[Dict]:
         with SEARCH_LATENCY.time():
             try:
-                sim_threshold = getattr(settings, "SIM_THRESHOLD", 0.5)
+                sim_threshold = float(settings.SIM_THRESHOLD)
                 query = np.asarray(embedding, dtype=np.float32)
                 norm = np.linalg.norm(query)
                 if norm != 0.0:

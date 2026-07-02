@@ -89,7 +89,7 @@ def test_verify_async_completion_includes_timings_and_timestamps(monkeypatch):
 
     client = TestClient(app)
     response = client.post(
-        "/verify_async",
+        "/api/v1/verify_async",
         json={
             "image_b64": _make_image_b64(),
             "user_id": "42",

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Optional, Union
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, model_validator
 
 
 class VerifyRequest(BaseModel):
@@ -20,7 +20,15 @@ class VerifyRequest(BaseModel):
 class VerifyResponse(BaseModel):
     status: str
     user_id: Optional[Union[str, int]] = None
+    # match_score — каноническое поле ТЗ (CLAUDE.md: {"match_score": 0.87}).
+    # similarity — legacy-алиас того же значения (оставлен для обратно-совместимости;
+    # валидатор ниже копирует similarity→match_score, если match_score не задан).
+    match_score: Optional[float] = None
     similarity: Optional[float] = None
+    # Уверенность в match-решении: high (≥HIGH_THRESHOLD=0.6) / medium (low_confidence
+    # 0.3–0.6) / low (<LOW_THRESHOLD=0.3, no_match) / None — match не считался
+    # (spoof_detected/quality_reject/retry/processing_failed).
+    confidence: Optional[str] = None
     liveness_passed: Optional[bool] = None
     queue_wait_ms: Optional[float] = None
     error_code: Optional[str] = None
@@ -42,16 +50,28 @@ class VerifyResponse(BaseModel):
     # (см. memory liveness-yakhyo-logit-semantics). Заполняется при require_liveness.
     spoofing_indicators: Optional[dict[str, Any]] = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _alias_match_score(cls, data: Any) -> Any:
+        # match_score ← similarity, если match_score не пришёл явно (legacy-контракт).
+        if isinstance(data, dict):
+            if data.get("match_score") is None and data.get("similarity") is not None:
+                data["match_score"] = data["similarity"]
+        return data
+
     model_config = ConfigDict(
         json_schema_extra={
             "examples": [
                 {
                     "status": "match",
-                    "similarity": 0.87,
+                    "match_score": 0.87,
+                    "confidence": "high",
                     "liveness_passed": True,
                 },
                 {
                     "status": "spoof_detected",
+                    "match_score": 0.0,
+                    "confidence": None,
                     "liveness_passed": False,
                 },
                 {

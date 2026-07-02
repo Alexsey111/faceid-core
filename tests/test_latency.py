@@ -16,7 +16,7 @@ def test_verify_latency():
     start = time.time()
 
     r = requests.post(
-        f"{API}/verify_base64",
+        f"{API}/api/v1/verify_base64",
         json={"user_id": "999", "image": img},
     )
 

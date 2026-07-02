@@ -61,7 +61,7 @@ def _make_request(body: bytes) -> Request:
         {
             "type": "http",
             "method": "POST",
-            "path": "/verify_async",
+            "path": "/api/v1/verify_async",
             "headers": [],
             "query_string": b"",
             "client": ("testclient", 12345),
