@@ -1,0 +1,40 @@
+{
+  "model_slug": "buffalo_l_w600k_r50",
+  "model_sha256": "unavailable",
+  "det_size": 320,
+  "n_pairs_total": 6000,
+  "n_missing": 0,
+  "n_no_face_pair": 0,
+  "all": {
+    "n_pairs": 6000,
+    "n_genuine": 3000,
+    "n_impostor": 3000,
+    "tar_at_far_0.001": 0.9533333333333334,
+    "tar_at_far_0.01": 0.9553333333333334,
+    "auc": 0.9824321111111111,
+    "eer": 0.041666666666666644,
+    "eer_threshold": 0.10387778282165527
+  },
+  "single_single": {
+    "n_pairs": 3927,
+    "n_genuine": 1958,
+    "n_impostor": 1969,
+    "tar_at_far_0.001": 0.9964249233912156,
+    "tar_at_far_0.01": 0.9974463738508682,
+    "auc": 0.9990991626596308,
+    "eer": 0.003565090361273877,
+    "eer_threshold": 0.1963157057762146
+  },
+  "multi_involved": {
+    "n_pairs": 2073,
+    "n_genuine": 1042,
+    "n_impostor": 1031,
+    "tar_at_far_0.001": 0.8723608445297505,
+    "tar_at_far_0.01": 0.8761996161228407,
+    "auc": 0.9518654903369816,
+    "eer": 0.09792590910190992,
+    "eer_threshold": 0.07612736523151398
+  },
+  "tz_target_tar_at_far_0_001": 0.99,
+  "note": "ALL = все пары; SINGLE-SINGLE = оба фото ровно 1 лицо; MULTI-INVOLVED = хотя бы одно фото multi-face. Memory lfw-single-face-meets-target утверждала SINGLE-SINGLE = 0.9964 (3927 пар). Этот замер подтверждает/опровергает."
+}
