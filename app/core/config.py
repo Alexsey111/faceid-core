@@ -101,6 +101,16 @@ class Settings(BaseSettings):
             raise ValueError("QUALITY_LIGHTING_MODE must be one of: hard, soft, off")
         return value
 
+    @field_validator("QUALITY_NOISE_MODE", mode="before")
+    @classmethod
+    def parse_quality_noise_mode(cls, v):
+        if v is None:
+            return "off"
+        value = str(v).strip().lower()
+        if value not in {"hard", "soft", "off"}:
+            raise ValueError("QUALITY_NOISE_MODE must be one of: hard, soft, off")
+        return value
+
     # -------------------------
     # PostgreSQL
     # -------------------------
@@ -183,6 +193,12 @@ class Settings(BaseSettings):
     QUALITY_LIGHTING_MODE: str = "soft"  # hard | soft | off
     QUALITY_MIN_LIGHTING_UNIFORMITY: float = 0.55  # min_cell/max_cell по сетке 3×3
     QUALITY_MAX_SHADOW_ASYMMETRY: float = 0.30  # |mean_left-mean_right|/overall_mean
+    # Шум (capture-качество): ISO-noise не ловится blur-gate (Laplacian variance на
+    # шумном фото ложноположительно высок → проходит blur). Метрика = std residual
+    # после medianBlur(3) (классический noise-estimator: high-freq стохастика).
+    # Свой режим, default off (бережёт TAR на бюджетных камерах; hard → quality_reject).
+    QUALITY_NOISE_MODE: str = "off"  # hard | soft | off
+    QUALITY_MAX_NOISE_STD: float = 12.0  # std residual gray-medianBlur(3), шкала 0-255
     # Окклюзия (маска/очки) — НЕ capture-качество, а требование чистого лица для
     # допуска. Детекция всегда; при срабатывании → status="retry", reason=
     # "remove_occlusion" (просим снять и пере-снять). Режим hard/soft/off НЕ действует:

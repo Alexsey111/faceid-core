@@ -45,6 +45,10 @@ class ImageQualityGate:
         self.min_lighting_uniformity = float(settings.QUALITY_MIN_LIGHTING_UNIFORMITY)
         self.max_shadow_asymmetry = float(settings.QUALITY_MAX_SHADOW_ASYMMETRY)
 
+        # Шум (capture-качество) — свой режим QUALITY_NOISE_MODE (default off).
+        self.noise_mode = settings.QUALITY_NOISE_MODE
+        self.max_noise_std = float(settings.QUALITY_MAX_NOISE_STD)
+
         # Окклюзия (маска/очки) — режимов hard/soft/off НЕТ: retry всегда при
         # срабатывании. Тумблеры включают/выключают детекцию каждого типа отдельно.
         self.mask_detect_enabled = bool(settings.QUALITY_MASK_DETECT_ENABLED)
@@ -234,6 +238,18 @@ class ImageQualityGate:
                         details=details,
                         stage="face",
                         mode=self.lighting_mode,
+                    )
+
+                # Шум (capture-качество) — свой режим QUALITY_NOISE_MODE (default off).
+                noise_check = self._check_noise(face_crop)
+                details.update(noise_check["details"])
+                if not noise_check["passed"]:
+                    return self._wrap_result(
+                        passed=False,
+                        reason=noise_check["reason"],
+                        details=details,
+                        stage="face",
+                        mode=self.noise_mode,
                     )
 
         return self._wrap_result(
@@ -447,6 +463,57 @@ class ImageQualityGate:
 
         # hard
         return {"passed": False, "reason": violated, "details": details}
+
+    def _check_noise(self, face_crop: np.ndarray) -> dict[str, Any]:
+        """ISO-шум: std residual после medianBlur(3) (классический noise-estimator).
+
+        Метрика: `resid = gray − medianBlur(gray, 3)`; `noise_std = resid.std()`.
+        medianBlur(3) подавляет стохастический high-freq шум, сохраняя структуру →
+        residual ~ чистая шумовая компонента. На чистом фото ~2-5, на шумном (high
+        ISO) ~15-30.Blur-gate (Laplacian variance) здесь НЕ помогает: шум повышает
+        variance → blurry-фото со съёмочным шумом проходит blur-gate ложно.
+
+        Режим QUALITY_NOISE_MODE: off → пропустить; soft → warning-only (passed=True,
+        noise_warning в details, бережёт TAR на бюджетных камерах); hard → passed=False.
+        """
+        mode = self.noise_mode
+        if mode == "off":
+            return {
+                "passed": True,
+                "reason": None,
+                "details": {"noise_check_skipped": True, "noise_check_mode": "off"},
+            }
+
+        gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
+        h, w = gray.shape[:2]
+        if h < 6 or w < 6:
+            return {
+                "passed": True,
+                "reason": None,
+                "details": {"noise_check_skipped": True, "noise_check_mode": mode},
+            }
+
+        # residual = исходник − medianBlur(3); std residual = оценка уровня шума.
+        base = cv2.medianBlur(gray, 3)
+        resid = gray.astype(np.float32) - base.astype(np.float32)
+        noise_std = float(resid.std())
+
+        details = {
+            "noise_check_skipped": False,
+            "noise_check_mode": mode,
+            "noise_std": round(noise_std, 3),
+        }
+
+        if noise_std <= self.max_noise_std:
+            return {"passed": True, "reason": None, "details": details}
+
+        # превышение порога шума
+        if mode == "soft":
+            details["noise_warning"] = "high_noise"
+            return {"passed": True, "reason": "high_noise", "details": details}
+
+        # hard
+        return {"passed": False, "reason": "high_noise", "details": details}
 
     def _check_occlusion(
         self,
