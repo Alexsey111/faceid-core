@@ -15,6 +15,7 @@ from typing import Any
 import numpy as np
 
 from app.ml.detection.retinaface_detector import RetinaFaceDetector
+from app.ml.detection.face_selection import select_main_face
 from app.ml.preprocessing.image_preprocessor import ImagePreprocessor
 
 logger = logging.getLogger("liveness.scoring")
@@ -59,7 +60,10 @@ def score_image_liveness(
             "spoofing_indicators": zero_indicators,
         }
 
-    top = faces[0]
+    # Выбор главного лица через composite conf×area (app/ml/detection/face_selection.py):
+    # на multi-face кадре берёт главного субъекта, а не top-conf фон; на single-face
+    # идентично faces[0]. Унифицировано с active-liveness challenge-потоком.
+    top = select_main_face(faces)
     probs, ok = checker.predict_probs(img, top["bbox"])
     if not ok:
         return {

@@ -6,14 +6,21 @@
 #   2) отдельные фоновые лица/постеры (multi-face) — мелкий фоновый может иметь
 #      высокую confidence, и тогда faces[0] (топ-confidence) выберет не того.
 # Эмпирика на двух датасетах (замер 2026-07-02):
-#   - кропнутые лица (custom 1680-id): faces[0] лучше — largest-area даёт regression
-#     TAR@FAR=0.001 0.9842→0.9635 (дубли с худшей локализацией);
+#   - кропнутые лица (custom 1680-id): faces[0] (pure conf) лучше — largest-area даёт
+#     regression TAR@FAR=0.001 0.9842→0.9635 (дубли с ~равной площадью, но худшей
+#     локализацией у крупного — largest берёт крупный, битый эмбеддинг);
 #   - full-scene (LFW с фоновыми людьми): largest-area лучше (faces[0] берёт
 #     высокоуверенный мелкий фоновый → битый эмбеддинг, TAR 0.914→0.953).
-# Robust-эвристика под оба случая:
+# Composite conf×area (гипотеза коммита 2b1a025, реализована здесь) покрывает ОБА:
+#   score = confidence × area. На кропнутых (area ~равна) conf доминирует →
+#   выбирается highest-conf дубликат (лучшая локализация) → custom 0.9842 сохранён.
+#   На full-scene (субъект крупный, фон мелкий) area доминирует → выбирается
+#   главный субъект → full-LFW ≈ largest. Pure faces[0] и pure largest каждый
+#   проигрывает на одном из датасетов; composite выигрывает на обоих.
+# Pipeline:
 #   1) сгруппировать детекции по перекрытию (IoU≥_IOU_MERGE) — дубли одного лица;
 #   2) в каждой группе оставить highest-confidence (лучше локализованный);
-#   3) среди представителей групп выбрать наибольший по площади (главный субъект).
+#   3) среди представителей выбрать max(confidence × area).
 from __future__ import annotations
 
 import numpy as np  # noqa: F401  (типы/совместимость; вычисления на float)
@@ -36,8 +43,13 @@ def _iou(a, b) -> float:
     return inter / ua if ua > 0 else 0.0
 
 
+def _composite_score(det: dict) -> float:
+    """Composite conf×area: на кропнутых доминирует conf, на full-scene — area."""
+    return float(det.get("confidence", 0.0)) * _area(det["bbox"])
+
+
 def select_main_face(faces: list[dict]) -> dict:
-    """Выбрать главное лицо среди детекций (robust под кропнутые и full-scene фото).
+    """Выбрать главное лицо среди детекций (composite conf×area под оба сценария).
 
     Args:
         faces: список детекций RetinaFaceDetector.detect —
@@ -45,6 +57,13 @@ def select_main_face(faces: list[dict]) -> dict:
 
     Returns:
         выбранная детекция (dict). При одном лице — оно же.
+
+    Эвристика:
+        - single-face → тривиально (faces[0]);
+        - multi-face → группы по IoU (дубли), представитель = highest-conf,
+          финал = max(confidence × area). На кропнутых дубли ~равной площади →
+          conf разделяет (custom 0.9842); на full-scene субъект крупнее → area
+          разделяет (full-LFW ≈ largest). См. замеры в комментарии модуля.
     """
     if len(faces) == 1:
         return faces[0]
@@ -64,5 +83,7 @@ def select_main_face(faces: list[dict]) -> dict:
     # 2) представитель каждой группы = highest-confidence (лучшая локализация)
     reps = [max(g, key=lambda d: d.get("confidence", 0.0)) for g in groups]
 
-    # 3) среди представителей — наибольший по площади (tie-break по confidence)
-    return max(reps, key=lambda d: (_area(d["bbox"]), d.get("confidence", 0.0)))
+    # 3) среди представителей — max(confidence × area): composite покрывает оба датасета.
+    #    confidence как tie-break при ~равной area (нормализация не нужна — area в
+    #    пикселях² доминирует при существенной разнице размеров, conf — при равных).
+    return max(reps, key=_composite_score)
