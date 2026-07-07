@@ -78,6 +78,13 @@ curl http://localhost:8000/health  # {"status":"ok"}
    действия не выполняют → `is_live=false` → токен не выдан.
 6. «Verify active» → `/verify_base64` с `liveness_mode=active` + токен → допуск.
 
+WS-контракт `/liveness/challenge/stream`: сервер шлёт `{type:"challenge", actions, deadline_ms}`
+→ клиент стримит бинарные JPEG-кадры + `{cmd:"done"}`/`{cmd:"cancel"}`; ответ
+`{type:"result", is_live, liveness_token, spoofing_indicators}` или
+`{type:"cancelled"}`. Коды закрытия: `4401` неверный ws_token, `4409` конфликт
+(уже стримит), `4410` challenge истёк/неизвестен, `4400` некорректное состояние
+challenge, `4503` liveness отключён/сервер занят, `1006` разрыв.
+
 ### Config
 - «Обновить» → `GET /api/v1/config` отдаёт текущие пороги (read-only):
   `FACE_MATCH_THRESHOLD`, `LIVENESS_THRESHOLD`, `LIVENESS_ENABLED`,

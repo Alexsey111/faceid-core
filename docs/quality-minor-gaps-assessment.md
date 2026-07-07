@@ -89,4 +89,4 @@ policy-задача, не security (active-gate + no_face уже защищаю�
   `evaluate_detection`, `noise_mode`/`max_noise_std` в `__init__`.
 - `app/core/config.py` — `QUALITY_NOISE_MODE` (validator + setting, default off),
   `QUALITY_MAX_NOISE_STD=12.0`.
-- `tests/unit/test_image_quality_noise.py` — 9 unit-тестов (285 unit green).
+- `tests/unit/test_image_quality_noise.py` — 8 unit-тестов.

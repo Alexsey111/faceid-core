@@ -7,7 +7,13 @@ MinIO, Redis. Docker Compose deploy (CPU по умолчанию, GPU-override �
 
 > Подробный операционный runbook — [`docs/deploy-runbook.md`](docs/deploy-runbook.md).
 > Мониторинг — [`docs/dashboard_guide.md`](docs/dashboard_guide.md). Двухнодовый стенд —
-> [`docs/two-node-stand.md`](docs/two-node-stand.md).
+> [`docs/two-node-stand.md`](docs/two-node-stand.md). SLO — [`docs/slo.md`](docs/slo.md).
+> Демо-GUI для презентаций — [`docs/demo-guide.md`](docs/demo-guide.md).
+> Оценки соответствия ТЗ: [recognition/FRR](docs/recognition-accuracy-assessment.md),
+> [liveness-accuracy](docs/liveness-accuracy-assessment.md),
+> [crypto/RSA](docs/crypto-rsa-assessment.md),
+> [3D-depth/deepfake](docs/liveness-3d-depth-deepfake-assessment.md),
+> [quality-gaps](docs/quality-minor-gaps-assessment.md).
 
 ---
 
@@ -81,6 +87,14 @@ Cutout/print — статичны, действия не выполняют → 
   proof. Точки gate: `_resolve_liveness` (`/verify_base64`, `/verify_async_base64`),
   `/verify_async_file`, `/verify_async` (JSON), defense-in-depth в worker.
 
+> **ТЗ «Liveness ≥98%» = security-цель (spoof-rejection), не формальная frame-accuracy.**
+> Frame-passive accuracy 0.9124 — baseline, не production-verdict. Соответствие ТЗ
+> достигается двумя рычагами: (1) active-gate — spoof-rejection 100%
+> (`LIVENESS_ACTIVE_REQUIRED=true`); (2) video-temporal aggregation в challenge-стриме
+> — AUC=1.0, cutout APCER=0. См. [`docs/liveness-accuracy-assessment.md`](docs/liveness-accuracy-assessment.md).
+> При default `LIVENESS_ACTIVE_REQUIRED=false` passive = frame-level (0.9124) —
+> для доступа по ТЗ ≥98% включать active-gate.
+
 > Active proof принимает только `/verify_base64` (sync fast-path). Multipart-эндпоинты
 > (`/verify`, `/verify_async_file`) токен не несут — для access-control не использовать.
 
@@ -98,7 +112,7 @@ Cutout/print — статичны, действия не выполняют → 
 | Освещение | uniformity 3×3 grid, shadow asymmetry | `bad_lighting` / `hard_shadow` (`QUALITY_LIGHTING_MODE`) |
 | **Окклюзия** | маска И очки (skin-tone / edge-density эвристики) | **`status="retry"`, `reason="remove_occlusion"`** |
 
-**Окклюзия — не отказ, а запрос пере-съёмки**: клиент по `occlusion_flags`
+**Окклюзия — не отказ, а запрос пере-съёмки**: клиент по `quality_details.occlusion_flags`
 (`mask_detected`, `glasses_detected`) просит снять окклюзию и пере-вызывает `/verify`.
 Верификация (match/no_match) считается **только** по чистому лицу — точность
 распознавания сохраняется. Тумблеры `QUALITY_MASK_DETECT_ENABLED`,
@@ -116,7 +130,8 @@ Cutout/print — статичны, действия не выполняют → 
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| POST | `/api/v1/upload` | загрузка эталона |
+| POST | `/api/v1/upload` | загрузка эталона (multipart) |
+| POST | `/api/v1/upload_base64` | загрузка эталона (base64) |
 | POST | `/api/v1/verify` | верификация (multipart) |
 | POST | `/api/v1/verify_base64` | верификация (base64, sync fast-path + Celery fallback) — **носит active liveness** |
 | POST | `/api/v1/verify_async_file` | async: file → MinIO → очередь |
@@ -125,14 +140,22 @@ Cutout/print — статичны, действия не выполняют → 
 | POST | `/api/v1/liveness` | passive liveness (standalone) |
 | POST | `/api/v1/liveness/challenge/init` | active challenge init |
 | WS | `/api/v1/liveness/challenge/stream` | active challenge стрим → liveness_token |
-| GET | `/api/v1/verify_result/{job_id}` | статус async-задачи |
-| POST | `/api/v1/update_reference` | обновление эталона |
+| GET | `/api/v1/verify_result/{job_id}` | статус async-задачи (legacy-алиас `/jobs/{job_id}`) |
+| GET | `/api/v1/jobs/{job_id}` | статус async-задачи |
+| GET | `/api/v1/jobs/{job_id}/stream` | SSE-стрим статуса async-задачи |
+| GET | `/api/v1/jobs/{job_id}/wait` | блокирующее ожидание результата |
+| GET | `/api/v1/status` | сводка состояния сервиса |
+| GET | `/api/v1/config` | публичные пороги (для демо-GUI; без секретов) |
+| PUT | `/api/v1/update-reference` | обновление эталона |
+| GET | `/health`, `/ready`, `/metrics` | без префикса `/api/v1`; health/ready открыты, `/metrics` под auth |
 
-**Ответ `/verify`**: `status` (`match` / `low_confidence` / `no_match` /
-`spoof_detected` / `quality_reject` / `retry` / `processing_failed`), `match_score`
-(= legacy `similarity`), `confidence` (`high` ≥0.6 / `medium` ≥0.3 / `low` / `null`),
-`liveness_passed`, `liveness_score`, `spoofing_indicators` (`{real_prob, spoof_prob}`),
-`quality_details`, `occlusion_flags`, `challenge_recommended`.
+**Ответ `/verify`** (`VerifyResponse`): `status` (`match` / `low_confidence` /
+`no_match` / `spoof_detected` / `quality_reject` / `retry` / `processing_failed`),
+`match_score` (= legacy `similarity`), `confidence` (`high` ≥0.6 / `medium` ≥0.3 /
+`low` / `null`), `liveness_passed`, `liveness_score`, `spoofing_indicators`
+(`{real_prob, spoof_prob}`), `quality_details` (включая `occlusion_flags`:
+`mask_detected`, `glasses_detected`), `reason`, `error_code`, `queue_wait_ms`,
+`challenge_recommended`.
 
 Пороги: `FACE_MATCH_THRESHOLD=0.6` (match), `FACE_LOW_THRESHOLD=0.3` (no_match),
 `SIM_THRESHOLD=0.30` (pre-filter поиска = LOW_THRESHOLD, не срезает low_confidence-band).
@@ -163,7 +186,9 @@ docker compose up -d --build
 ```
 
 Поднимает postgres (pgvector), redis, minio, api, api_lb, worker, prometheus.
-Healthcheck'и + `restart: unless-stopped` на всех长期-сервисах (см. runbook).
+Healthcheck'и + `restart: unless-stopped` на долгоживущих сервисах (см. runbook).
+Profile-сервисы (`fast_worker`, `worker_metrics`, `worker_fast`/`worker_heavy`,
+`autoscaler`) подключаются через `--profile`.
 
 ### GPU (production с CUDA)
 
@@ -178,6 +203,22 @@ CUDA→DML→CPU fallback (`ONNX_ARCFACE_PROVIDERS=auto` default).
 
 > Локальная dev-машина без NVIDIA CUDA — только CPU-сборка; архитектура под CPU не
 > сужается (production может быть на GPU-хостах).
+
+### Demo-GUI (презентации, не production)
+
+Single-page vanilla-JS GUI на `/demo/` (веб-камера → API, same-origin на
+`localhost:8000`, без CORS/HTTPS): табы Upload/Verify/Liveness/Active Challenge/Config.
+Кадры только в памяти (canvas → fetch → GC), без localStorage/логов биометрии.
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d --build
+# открыть http://localhost:8000/demo/  (AUTH_ENABLED=false, liveness+active включены)
+```
+
+`docker-compose.demo.yml` — явный dev-override (`AUTH_ENABLED=false`,
+`LIVENESS_ENABLED=true`, `LIVENESS_ACTIVE_ENABLED=true`), base-файл не правится.
+Production: убрать mount `/demo` или защитить auth+HTTPS. См.
+[`docs/demo-guide.md`](docs/demo-guide.md).
 
 ### Конфигурация
 

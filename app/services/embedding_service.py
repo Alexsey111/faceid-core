@@ -35,6 +35,14 @@ class EmbeddingService:
 
         result = self.pipeline.process(image_bytes)
 
+        # Pipeline может вернуть не-"ok" status (quality_reject/retry/no_face/spoof) —
+        # в этих случаях ключа "embedding" нет. Раньше падало KeyError → HTTP 500.
+        # Поднимаем ValueError с reason → HTTP 400 (как в /verify), клиент получает
+        # структурированный отказ вместо 500.
+        if result.get("status") != "ok":
+            reason = result.get("quality_reason") or result.get("status")
+            raise ValueError(f"enroll_failed: {reason}")
+
         embedding: np.ndarray = result["embedding"]
         # normalize embedding
         embedding = embedding / np.linalg.norm(embedding)

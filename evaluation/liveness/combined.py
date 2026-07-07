@@ -2,7 +2,7 @@
 #
 # Пункт 2 аудита ТЗ: доказать соответствие "Liveness-точность ≥98%".
 # Контекст замеров:
-#   - Passive MiniFASNetV2 frame-level: accuracy 0.9124, cutout APCER 0.4052 — НЕ достигает 98%.
+#   - Passive MiniFASNetV2 frame-level: accuracy 0.9124, cutout APCER 0.2119 — НЕ достигает 98%.
 #     Причина: cutout (вырезанная распечатка с дырями под глаза) обманывает passive-модель
 #     (memory liveness-yakhyo-logit-semantics: 3 логита [dead,real,spoof], cutout→real).
 #   - Active-gate (LIVENESS_ACTIVE_REQUIRED=true) закрывает cutout статически: без

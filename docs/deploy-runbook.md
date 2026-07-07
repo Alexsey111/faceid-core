@@ -109,10 +109,10 @@ Healthcheck'и (определены в `docker-compose.yml`):
 | redis       | `redis-cli ping`                                             |
 | minio       | `curl /minio/health/ready`                                   |
 | api         | `urllib.urlopen('http://127.0.0.1:8000/ready')`              |
-| api_lb      | `wget http://localhost/healthz` (nginx отдаёт 200 напрямую)  |
+| api_lb      | `wget http://127.0.0.1/healthz` (nginx отдаёт 200 напрямую; `localhost` на alpine резолвится в `::1` → connection refused, поэтому явно IPv4)  |
 | worker      | `redis.from_url(REDIS_URL).ping()` (брокер достижим)         |
 
-`restart: unless-stopped` на всех长期-сервисах — авторестарт после падения/перезагрузки хоста.
+`restart: unless-stopped` на долгоживущих сервисах (postgres/redis/minio/api/api_lb/worker) — авторестарт после падения/перезагрузки хоста. `prometheus` намеренно без restart-policy (stateless scrape, перезапуск безопасен).
 
 Готовность API напрямую (минуя LB):
 ```bash

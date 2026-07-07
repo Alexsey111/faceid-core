@@ -15,6 +15,9 @@ from app.services.rate_limiter import RateLimiter
 
 router = APIRouter()
 
+# Лимит размера изображения (consistency с /verify: app/api/routes/verify.py:54).
+MAX_IMAGE_SIZE = 5 * 1024 * 1024
+
 
 @router.post("/upload", response_model=SuccessResponse)
 async def upload_file(
@@ -28,9 +31,19 @@ async def upload_file(
     """
     RateLimiter.check(http_request, "upload", limit=5)
 
+    # Валидация входа (consistency с /verify): MIME + размер.
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="file must be an image")
     try:
         image_bytes = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"invalid image: {e}")
+    if len(image_bytes) == 0:
+        raise HTTPException(status_code=400, detail="empty image")
+    if len(image_bytes) > MAX_IMAGE_SIZE:
+        raise HTTPException(status_code=413, detail="image too large (max 5MB)")
 
+    try:
         embedding_repo = EmbeddingRepository(db)
         user_repo = UserRepository(db)
         service = EmbeddingService(embedding_repo, user_repo)
@@ -65,6 +78,12 @@ async def upload_base64(
 
     try:
         image_bytes = base64.b64decode(request.image)
+
+        # Валидация размера (consistency с /verify: MAX_IMAGE_SIZE 5MB).
+        if len(image_bytes) == 0:
+            raise ValueError("empty image")
+        if len(image_bytes) > MAX_IMAGE_SIZE:
+            raise ValueError("image too large (max 5MB)")
 
         embedding_repo = EmbeddingRepository(db)
         user_repo = UserRepository(db)

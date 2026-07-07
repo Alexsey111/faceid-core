@@ -8,7 +8,7 @@
 
 | SLO | Таргет | Метрика (Prometheus) | Источник |
 |---|---|---|---|
-| **Latency P95 `/verify`** | < 1000 мс | `faceid_request_latency_seconds` (bucket 1.0) | `app/monitoring/metrics.py:REQUEST_LATENCY` |
+| **Latency P95 `/verify`** | < 1000 мс | `faceid_http_request_duration_seconds` (bucket 1.0) | `app/monitoring/metrics.py:REQUEST_LATENCY` |
 | **Latency P95 pipeline** | < 1000 мс | `faceid_pipeline_ms` (bucket 1000) | `app/monitoring/metrics.py:PIPELINE_MS` |
 | **Per-stage budget** | см. ниже | `faceid_*_ms` (DETECT/ENCODE/VECTOR_SEARCH/LIVENESS/QUALITY) | per-stage histograms |
 | **Availability** | ≥ 99.5% (monthly) | uptime = `1 − (5xx + downtime)/total`; `/ready` healthcheck | `/ready`, LB, restart |
@@ -84,8 +84,8 @@ production deploy с LB + persistent volumes для postgres/redis/minio.
 - **Grafana** `docs/grafana_dashboard.json` + `docs/dashboard_guide.md` —
   P95/P99 latency, error rate, stage breakdown, queue depth.
 - **Alerting (рекомендация):**
-  - `histogram_quantile(0.95, REQUEST_LATENCY) > 1.0` → page (SLO breach);
-  - `rate(REQUEST_COUNTER{status=~"5.."}[5m]) / rate(REQUEST_COUNTER[5m]) > 0.005`
+  - `histogram_quantile(0.95, faceid_http_request_duration_seconds_bucket) > 1.0` → page (SLO breach);
+  - `rate(faceid_http_requests_total{status=~"5.."}[5m]) / rate(faceid_http_requests_total[5m]) > 0.005`
     → page (error-rate breach);
   - `/ready != 200` на api-инстансе > 1 мин → page (availability risk);
   - `QUEUE_DEPTH` growth + `QUEUE_DELAY_MS` P95 > 500 мс → warn (capacity).
