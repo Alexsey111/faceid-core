@@ -151,20 +151,25 @@ Cutout/print — статичны, действия не выполняют → 
 
 **Ответ `/verify`** (`VerifyResponse`): `status` (`match` / `low_confidence` /
 `no_match` / `spoof_detected` / `quality_reject` / `retry` / `processing_failed`),
-`match_score` (= legacy `similarity`), `confidence` (`high` ≥0.6 / `medium` ≥0.3 /
+`match_score` (= legacy `similarity`), `confidence` (`high` ≥0.45 / `medium` ≥0.3 /
 `low` / `null`), `liveness_passed`, `liveness_score`, `spoofing_indicators`
 (`{real_prob, spoof_prob}`), `quality_details` (включая `occlusion_flags`:
 `mask_detected`, `glasses_detected`), `reason`, `error_code`, `queue_wait_ms`,
 `challenge_recommended`.
 
-Пороги: `FACE_MATCH_THRESHOLD=0.6` (match), `FACE_LOW_THRESHOLD=0.3` (no_match),
-`SIM_THRESHOLD=0.30` (pre-filter поиска = LOW_THRESHOLD, не срезает low_confidence-band).
+Пороги: `FACE_MATCH_THRESHOLD=0.45` (match, = `HIGH_THRESHOLD`; калиброван под
+ТЗ FRR≤3% на LFW single-face — см.
+[recognition-assessment](docs/recognition-accuracy-assessment.md)), `FACE_LOW_THRESHOLD=0.3`
+(no_match = `LOW_THRESHOLD`), `SIM_THRESHOLD=0.30` (pre-filter поиска = LOW_THRESHOLD,
+не срезает low_confidence-band [0.3, 0.45)).
 
 ---
 
 ## Безопасность (152-ФЗ)
 
 - **Эмбеддинги шифруются AES-256** при записи в БД (`ENCRYPTION_KEY` — секрет окружения).
+  Content-hash (`encrypted_hash`, sha256 от plaintext) хранится отдельно для
+  idempotency/lookup без decrypt-all (ТЗ-схема).
 - **Исходные фото не хранятся**: после извлечения эмбеддинга байт-картинка удаляется;
   MinIO используется только как транзит для async-задач (воркер удаляет объект после
   обработки).
@@ -224,6 +229,7 @@ Production: убрать mount `/demo` или защитить auth+HTTPS. См.
 
 Основные тумблеры (env / `app/core/config.py`): `LIVENESS_ENABLED`,
 `LIVENESS_ACTIVE_ENABLED`, `LIVENESS_ACTIVE_REQUIRED`, `LIVENESS_THRESHOLD=0.859`,
+`FACE_MATCH_THRESHOLD=0.45` (= `HIGH_THRESHOLD`, match; калиброван под ТЗ FRR≤3%),
 `ONNX_ARCFACE_PROVIDERS=auto`, `ARCFACE_MODEL_REL=buffalo_l/w600k_r50.onnx`,
 `QUALITY_GATE_MODE`, `AUTH_ENABLED`, `FAISS_ENABLED`. Полный список — в config и runbook.
 

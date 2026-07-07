@@ -260,10 +260,14 @@ class Settings(BaseSettings):
     LIVENESS_CONSISTENCY_AREA_CV: float = 0.25  # max CV площади bbox по последовательности
     LIVENESS_CONSISTENCY_IOU_MIN: float = 0.30  # min IoU bbox кадр-к-кадру (анти jump-cut)
     LIVENESS_MIN_FRAMES: int = 6                # минимум кадров с лицом для вердикта
-    FACE_MATCH_THRESHOLD: float = 0.6
+    # Порог допуска match. Калиброван под ТЗ FRR≤3% на LFW single-face
+    # (docs/recognition-accuracy-assessment.md): при 0.45 FRR=2.71%, FAR=0.
+    # Прежнее 0.6 давало FRR=22% (безопасно, но каждый 5-й legit отказан).
+    # LOW_THRESHOLD=0.3 — no_match; [0.3,0.45) — low_confidence (challenge_recommended).
+    FACE_MATCH_THRESHOLD: float = 0.45
     FACE_LOW_THRESHOLD: float = 0.3
     FACE_MARGIN_THRESHOLD: float = 0.1
-    HIGH_THRESHOLD: float = 0.60
+    HIGH_THRESHOLD: float = 0.45
     LOW_THRESHOLD: float = 0.30
     MARGIN_THRESHOLD: float = 0.10
     # Pre-filter поиска в SearchService: кандидаты ниже этого порога отбрасываются

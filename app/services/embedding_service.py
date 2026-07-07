@@ -48,6 +48,11 @@ class EmbeddingService:
         embedding = embedding / np.linalg.norm(embedding)
         embedding = embedding.tolist()
 
+        # Replace-семантика: один эталон на пользователя. Перед create удаляем
+        # старые эмбеддинги этого user (как /update-reference). Раньше /upload
+        # копил по записи на каждый вызов без лимита (audit upload-gaps).
+        await self.embedding_repo.delete_by_user_id(internal_user_id)
+
         record = await self.embedding_repo.create_embedding(
             user_id=internal_user_id,
             embedding=embedding

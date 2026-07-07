@@ -16,8 +16,15 @@ if not TEST_IMAGE_2.exists():
 
 
 @pytest.mark.asyncio
-async def test_multi_embedding():
-    """Test enrolling multiple photos for same user and verifying both match."""
+async def test_upload_replace_same_user():
+    """Replace-семантика /upload: повторный enroll того же user перезаписывает
+    эталон (один эталон на пользователя, см. embedding_service.enroll_face).
+
+    Раньше /upload копил по записи на каждый вызов (multi-embedding + centroid).
+    После audit upload-gaps (пункт 7) — replace: enroll photo2 удаляет photo1.
+    Тест проверяет что после двух enroll того же user verify работает (оба фото
+    одного человека → match). Используются два разных фото одного человека
+    (images/person1.jpg, person2.jpg); fallback — t1.jpg (один человек)."""
 
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:

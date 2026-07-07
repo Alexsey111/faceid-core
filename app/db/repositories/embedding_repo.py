@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.core.crypto import decrypt_vector, encrypt_vector
+from app.core.crypto import decrypt_vector, encrypt_vector, hash_vector
 from app.monitoring.metrics import SEARCH_DECRYPT_ALL_FALLBACK_N, SEARCH_LATENCY
 from app.models.embedding import Embedding
 from app.models.user import User
@@ -50,10 +50,14 @@ class EmbeddingRepository:
             raise ValueError("Embedding must be a 512-dim vector")
 
         encrypted = encrypt_vector(vector)
+        # Content-hash от plaintext (ТЗ-схема: encrypted_hash TEXT NOT NULL).
+        # Даёт idempotency/lookup без decrypt-all.
+        emb_hash = hash_vector(vector)
 
         record = Embedding(
             user_id=user_id,
-            encrypted_embedding=encrypted
+            encrypted_embedding=encrypted,
+            encrypted_hash=emb_hash,
         )
         self.db.add(record)
         await timed_db_call(self.db.flush(), "embedding_repo.create_embedding.flush")

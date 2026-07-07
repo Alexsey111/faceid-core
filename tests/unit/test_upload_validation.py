@@ -27,6 +27,7 @@ def _service_with_pipeline_result(result: dict[str, Any]) -> EmbeddingService:
     """EmbeddingService с замоканным pipeline (без загрузки ONNX-моделей)."""
     repo = MagicMock()
     repo.create_embedding = AsyncMock(return_value=MagicMock(id=42))
+    repo.delete_by_user_id = AsyncMock(return_value=0)
     svc = EmbeddingService(repo, user_repo=None)
     svc.pipeline = MagicMock()
     svc.pipeline.process = MagicMock(return_value=result)

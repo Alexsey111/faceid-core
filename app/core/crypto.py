@@ -1,3 +1,5 @@
+import hashlib
+
 import numpy as np
 from Crypto.Cipher import AES
 from Crypto.Random import get_random_bytes
@@ -57,3 +59,20 @@ def encrypt_vector(vector) -> bytes:
 def decrypt_vector(data: bytes) -> np.ndarray:
     decrypted = decrypt(data)
     return np.frombuffer(decrypted, dtype=np.float32)
+
+
+def hash_vector(vector) -> str:
+    """Content-hash нормированного эмбеддинга (sha256 от plaintext-байтов).
+
+    Хранится отдельно от encrypted_embedding (в колонке encrypted_hash) — даёт
+    content-based idempotency/lookup (`WHERE encrypted_hash = :h`) без decrypt-all.
+    ТЗ-схема (CLAUDE.md) требует encrypted_hash TEXT NOT NULL в face_embeddings.
+    Hash от plaintext: одинаковый вектор → одинаковый hash (детерминированно);
+    AES-GCM nonce случайный → encrypted_embedding уникален даже для того же вектора,
+    поэтому по шифртексту idempotency не определить — отдельный hash необходим.
+    """
+    if isinstance(vector, (bytes, bytearray, memoryview)):
+        data = bytes(vector)
+    else:
+        data = np.asarray(vector, dtype=np.float32).tobytes()
+    return hashlib.sha256(data).hexdigest()

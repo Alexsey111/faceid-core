@@ -19,13 +19,13 @@ pytestmark = pytest.mark.unit
 
 def test_confidence_high_for_match():
     assert _confidence_label(0.87, "match") == "high"
-    # граница HIGH_THRESHOLD (0.6) включительно → high
+    # граница HIGH_THRESHOLD (0.45) включительно → high
     assert _confidence_label(settings.HIGH_THRESHOLD, "match") == "high"
 
 
 def test_confidence_medium_for_low_confidence_band():
-    # 0.3 ≤ sim < 0.6 → medium (low_confidence)
-    assert _confidence_label(0.45, "low_confidence") == "medium"
+    # 0.3 ≤ sim < 0.45 → medium (low_confidence band)
+    assert _confidence_label(0.40, "low_confidence") == "medium"
     assert _confidence_label(settings.LOW_THRESHOLD, "low_confidence") == "medium"
 
 
@@ -76,6 +76,6 @@ def test_api_v1_prefix_mounted():
 # --- SIM_THRESHOLD выровнен с LOW_THRESHOLD ---
 
 def test_sim_threshold_aligned_with_low_threshold():
-    # Pre-filter поиска не должен срезать low_confidence-диапазон (0.3–0.6).
-    # SIM_THRESHOLD == LOW_THRESHOLD (no_match boundary), а не 0.5/0.6.
+    # Pre-filter поиска не должен срезать low_confidence-диапазон (0.3–0.45).
+    # SIM_THRESHOLD == LOW_THRESHOLD (no_match boundary), а не 0.45.
     assert settings.SIM_THRESHOLD == settings.LOW_THRESHOLD == 0.30

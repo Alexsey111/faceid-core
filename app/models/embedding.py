@@ -3,7 +3,7 @@
 import numpy as np
 
 from datetime import datetime
-from sqlalchemy import ForeignKey, DateTime, LargeBinary
+from sqlalchemy import ForeignKey, DateTime, LargeBinary, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
@@ -33,6 +33,17 @@ class Embedding(Base):
     encrypted_embedding: Mapped[bytes] = mapped_column(
         LargeBinary,
         nullable=False
+    )
+
+    # Content-hash нормированного эмбеддинга (sha256 от plaintext, app.core.crypto.
+    # hash_vector). ТЗ-схема (CLAUDE.md) требует encrypted_hash TEXT NOT NULL.
+    # Даёт content-based idempotency/lookup без decrypt-all (AES-GCM nonce случаен
+    # → по encrypted_embedding idempotency не определить). Индекс для быстрого
+    # WHERE encrypted_hash = :h.
+    encrypted_hash: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        index=True,
     )
 
     created_at: Mapped[datetime] = mapped_column(

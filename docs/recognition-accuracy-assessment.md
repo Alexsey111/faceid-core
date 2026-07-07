@@ -54,15 +54,19 @@ FRR на single-single (1958 genuine / 1969 impostor) при фиксирова�
 оператора в зависимости от приоритета security (низкий FAR / высокий FRR, thr 0.6)
 vs usability (ТЗ-FRR ≤3%, thr ≈0.45).
 
-### Рекомендация
+### Решение (2026-07-07)
 
-- **Для соответствия ТЗ FRR≤3%** при сохранении FAR=0 на LFW: калибровать
-  `FACE_MATCH_THRESHOLD` к **0.45** (env, без правки кода). На LFW FAR остаётся 0,
-  FRR 2.71%.
-- **Для access-control high-security** (приоритет нулевого FAR): оставить 0.6,
-  честно зафиксировав FRR 22% как плату за zero-impostor-accept.
-- Калибровка под production-dataset (не LFW) обязательна — LFW-числа = reference,
-  не абсолют. `FACE_MATCH_THRESHOLD` вынесен в `app/core/config.py` именно для этого.
+**Default `FACE_MATCH_THRESHOLD` / `HIGH_THRESHOLD` калиброваны к 0.45**
+(`app/core/config.py`) — соответствует ТЗ FRR≤3% (FRR 2.71%, FAR=0 на LFW
+single-face). `LOW_THRESHOLD=0.30` (no_match); low_confidence band [0.30, 0.45)
+→ `challenge_recommended` (active liveness), не hard-reject — реальный hard-FRR
+(no_match) = 0.46%.
+
+Прежнее 0.6 оставлено как high-security override через env
+(`FACE_MATCH_THRESHOLD=0.6`) — zero-impostor-accept ценой FRR 22%.
+
+Калибровка под production-dataset (не LFW) обязательна — LFW-числа = reference,
+не абсолют. `FACE_MATCH_THRESHOLD` вынесен в env именно для этого.
 
 ## Связанные артефакты
 

@@ -18,9 +18,27 @@
 | Формат | `nonce ‖ tag ‖ ciphertext` |
 
 Применение: эмбеддинги (512D float32) шифруются перед записью в БД
-(`face_embeddings.encrypted_hash`), расшифровываются при verify.
+(`embeddings.encrypted_embedding`), расшифровываются при verify.
 AES-256-GCM даёт **конфиденциальность + целостность** одновременно —
-tamper шифр-текта.detect'ится на `decrypt_and_verify` (исключение).
+tamper шифр-текта detect'ится на `decrypt_and_verify` (исключение).
+
+## `encrypted_hash` — content-hash для idempotency/lookup (ТЗ-схема)
+
+ТЗ-схема (CLAUDE.md) требует в `face_embeddings` поле `encrypted_hash TEXT NOT NULL`.
+Реализовано (2026-07-07, пункт 8 аудита):
+
+- `app/core/crypto.py:hash_vector` — `sha256(normalized_embedding_bytes).hexdigest()`,
+  детерминированный content-hash от plaintext.
+- `app/models/embedding.py:encrypted_hash` (Text, NOT NULL, index) — хранится
+  отдельно от `encrypted_embedding`.
+- `app/db/repositories/embedding_repo.create_embedding` вычисляет hash при enroll.
+- Миграция `0003_add_encrypted_hash` (server_default='' для существующих строк).
+
+**Зачем отдельно от GCM-tag:** AES-GCM nonce случаен → `encrypted_embedding`
+уникален при каждом шифровании даже для того же вектора → по шифртексту
+idempotency не определить. `encrypted_hash` (sha256 от plaintext) даёт
+content-based idempotency/lookup (`WHERE encrypted_hash = :h`) без decrypt-all.
+GCM-tag внутри `encrypted_embedding` остаётся для integrity при расшифровке.
 
 ## ТЗ «AES-256 / RSA-2048» — это опции (OR), не оба
 

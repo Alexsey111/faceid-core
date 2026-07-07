@@ -28,10 +28,8 @@ async def update_reference(
         embedding_repo = EmbeddingRepository(db)
         service = EmbeddingService(embedding_repo)
 
-        # удалить старый embedding
-        await embedding_repo.delete_by_user_id(user_id)
-
-        # создать новый
+        # enroll_face сам удаляет старые эмбеддинги user (replace-семантика,
+        # см. embedding_service.enroll_face) — отдельный delete не нужен.
         result = await service.enroll_face(
             user_id=user_id,
             image_bytes=image_bytes
