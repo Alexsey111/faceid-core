@@ -187,42 +187,6 @@ def test_normalize_priority():
 
 
 @pytest.mark.asyncio
-async def test_call_fast_worker_variants():
-    class FakeResponse:
-        def __init__(self, data):
-            self._data = data
-
-        def raise_for_status(self):
-            return None
-
-        def json(self):
-            return self._data
-
-    class FakeClient:
-        def __init__(self, data):
-            self.data = data
-            self.calls = []
-
-        async def post(self, url, json):
-            self.calls.append((url, json))
-            return FakeResponse(self.data)
-
-    client = FakeClient({"status": "no_face"})
-    data, elapsed = await verify_route._call_fast_worker(client, "http://worker", {"x": 1})
-    assert data == {"status": "no_face"}
-    assert elapsed >= 0
-    assert client.calls[0][0] == "http://worker/verify_sync"
-
-    client = FakeClient({"status": "ok", "embedding": [1, 2, 3]})
-    data, _ = await verify_route._call_fast_worker(client, "http://worker", {"x": 1})
-    assert data["embedding"] == [1, 2, 3]
-
-    client = FakeClient({"status": "ok"})
-    with pytest.raises(HTTPException, match="invalid payload"):
-        await verify_route._call_fast_worker(client, "http://worker", {"x": 1})
-
-
-@pytest.mark.asyncio
 async def test_enqueue_verify_job_success_and_failure(monkeypatch):
     captured = {}
 
@@ -563,36 +527,6 @@ async def test_job_status_route_not_found_and_found(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_verify_base64_fallbacks(monkeypatch):
-    captured = {}
-    monkeypatch.setattr(verify_route.settings, "USE_FAST_PATH", True)
-    monkeypatch.setattr(verify_route, "is_fast_worker_enabled", lambda: True)
-    monkeypatch.setattr(verify_route, "should_use_async", lambda: False)
-    monkeypatch.setattr(verify_route, "try_reserve_fast_path_slot", lambda: False)
-    monkeypatch.setattr(verify_route, "get_fast_worker_failures", lambda: 2)
-    monkeypatch.setattr(verify_route.RateLimiter, "check", lambda *args, **kwargs: None)
-    monkeypatch.setattr(verify_route, "decrement_active", lambda: None)
-
-    async def fake_enqueue_verify_job(**kwargs):
-        captured.update(kwargs)
-
-    monkeypatch.setattr(verify_route, "_enqueue_verify_job", fake_enqueue_verify_job)
-
-    result = await verify_route.verify_base64(
-        VerifyRequest(
-            image=base64.b64encode(b"image-bytes").decode("utf-8"),
-            user_id="55",
-            require_liveness=False,
-        ),
-        http_request=SimpleNamespace(),
-        db=SimpleNamespace(),
-    )
-
-    assert result["status"] == "pending"
-    assert captured["user_id"] == "55"
-
-
-@pytest.mark.asyncio
 async def test_verify_worker_run_worker_processes_one_job(monkeypatch):
     seen = {}
     batches = [
@@ -665,59 +599,9 @@ async def test_verify_worker_main_guard(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_verify_base64_fast_path_uses_service_without_pipeline(monkeypatch):
-    captured = {}
-
-    monkeypatch.setattr(verify_route.settings, "USE_FAST_PATH", True)
-    monkeypatch.setattr(verify_route, "is_fast_worker_enabled", lambda: True)
-    monkeypatch.setattr(verify_route, "should_use_async", lambda: False)
-    monkeypatch.setattr(verify_route, "try_reserve_fast_path_slot", lambda: True)
-    monkeypatch.setattr(verify_route, "record_fast_worker_success", lambda: None)
-    monkeypatch.setattr(verify_route, "decrement_active", lambda: None)
-    monkeypatch.setattr(verify_route.RateLimiter, "check", lambda *args, **kwargs: None)
-    monkeypatch.setattr(verify_route, "_call_fast_worker", lambda *args, **kwargs: asyncio.sleep(0, result=(
-        {
-            "embedding": [0.1, 0.2],
-            "status": "ok",
-        },
-        12.3,
-    )))
-
-    class FakeService:
-        async def verify_from_pipeline_result(self, pipeline_result, **kwargs):
-            captured["pipeline_result"] = pipeline_result
-            captured["kwargs"] = kwargs
-            return {"status": "match", "similarity": 0.99}
-
-    def fake_get_service_without_pipeline(db):
-        captured["db"] = db
-        return FakeService()
-
-    monkeypatch.setattr(verify_route, "get_verification_service_without_pipeline", fake_get_service_without_pipeline)
-    monkeypatch.setattr(verify_route, "get_verification_service", lambda db: (_ for _ in ()).throw(AssertionError("unexpected pipeline service")))
-
-    response = await verify_route.verify_base64(
-        VerifyRequest(
-            image=base64.b64encode(b"image-bytes").decode("utf-8"),
-            user_id="55",
-            require_liveness=True,
-        ),
-        http_request=SimpleNamespace(),
-        db=SimpleNamespace(),
-    )
-
-    assert response == {"status": "match", "similarity": 0.99}
-    assert captured["kwargs"]["image_bytes"] == b"image-bytes"
-    assert captured["kwargs"]["user_id"] == "55"
-    assert captured["kwargs"]["require_liveness"] is True
-    assert captured["pipeline_result"]["status"] == "ok"
-
-
-@pytest.mark.asyncio
 async def test_verify_base64_falls_back_to_async_queue(monkeypatch):
     captured = {}
 
-    monkeypatch.setattr(verify_route.settings, "USE_FAST_PATH", False)
     monkeypatch.setattr(verify_route.RateLimiter, "check", lambda *args, **kwargs: None)
     monkeypatch.setattr(verify_route, "decrement_active", lambda: None)
 

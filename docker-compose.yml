@@ -219,65 +219,6 @@ services:
       retries: 5
       start_period: 10s
 
-  fast_worker:
-    build:
-      context: .
-      dockerfile: infrastructure/docker/api.Dockerfile
-    profiles:
-      - disabled
-    cpus: "2.0"
-    deploy:
-      resources:
-        limits:
-          cpus: "2.0"
-    environment:
-      - ENV=dev
-      - APP_ROLE=fast_worker
-      - MODELS_DIR=/app/models
-      - WORKER_SEMAPHORE=${WORKER_SEMAPHORE:-1}
-      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
-      - REDIS_URL=redis://redis:6379/0
-      - REDIS_HOST=redis
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - CELERYD_PREFETCH_MULTIPLIER=1
-      - WORKER_COUNT=8
-      - ASYNC_THROUGHPUT_PER_SEC=${ASYNC_THROUGHPUT_PER_SEC:-12}
-      - BACKPRESSURE_MAX_QUEUE_DELAY_MS=${BACKPRESSURE_MAX_QUEUE_DELAY_MS:-750}
-      - INFLIGHT_LIMIT=${INFLIGHT_LIMIT:-32}
-      - MAX_QUEUE_SIZE=${MAX_QUEUE_SIZE:-16}
-      - EMBED_BATCH_ENABLED=true
-      - EMBED_BATCH_SIZE=8
-      - EMBED_BATCH_TIMEOUT_MS=10
-      - EMBED_BATCH_MAX_WAIT_GUARD_MS=20
-      - LIVENESS_ENABLED=false
-      - FAISS_ENABLED=false
-      - ONNX_INTRA_OP_THREADS=1
-      - ONNX_INTER_OP_THREADS=1
-      - MINIO_ENDPOINT=minio:9000
-      - MINIO_ACCESS_KEY=minioadmin
-      - MINIO_SECRET_KEY=minioadmin
-      - USE_FAST_PATH=true
-      - FAST_PATH_MAX_CONCURRENCY=4
-      - FAST_WORKER_URL=http://fast_worker:8000
-      - EMBED_BATCH_ENABLED=false
-      - FAST_WORKER_MAX_CONCURRENCY=1
-      - LIVENESS_ENABLED=false
-      - ONNX_INTRA_OP_THREADS=1
-      - ONNX_INTER_OP_THREADS=1
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1 --loop uvloop --http httptools --backlog 2048
-    ulimits:
-      nofile:
-        soft: 65536
-        hard: 65536
-
   worker:
     build:
       context: .

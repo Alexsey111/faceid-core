@@ -20,12 +20,13 @@ class VerifyRequest(BaseModel):
 class VerifyResponse(BaseModel):
     status: str
     user_id: Optional[Union[str, int]] = None
-    # job_id — присутствует в pending-ответе async-fallback (/verify_base64 при
-    # USE_FAST_PATH=false возвращает {job_id, status:"pending"}). Без этого поля
-    # smart-union (VerifyResponse | VerifyEnqueueResponse) сериализует pending через
-    # VerifyResponse и ВЫКИДЫВАЕТ job_id (extra) → клиент не может поллить
-    # /jobs/{id}/wait → verify «зависает» на status=pending. Optional: в terminal
-    # (match/no_match/…) ответе job_id=None; в pending — реальный id.
+    # job_id — присутствует в pending-ответе async-пути (/verify_base64 всегда
+    # ставит job в face_verify_queue и возвращает {job_id, status:"pending"}).
+    # Без этого поля smart-union (VerifyResponse | VerifyEnqueueResponse)
+    # сериализует pending через VerifyResponse и ВЫКИДЫВАЕТ job_id (extra) →
+    # клиент не может поллить /jobs/{id}/wait → verify «зависает» на
+    # status=pending. Optional: в terminal (match/no_match/…) ответе job_id=None;
+    # в pending — реальный id.
     job_id: Optional[str] = None
     # match_score — каноническое поле ТЗ (CLAUDE.md: {"match_score": 0.87}).
     # similarity — legacy-алиас того же значения (оставлен для обратно-совместимости;

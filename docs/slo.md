@@ -41,9 +41,13 @@ memory `hw-no-cuda-gpu`) — encode/detect ~400-550 мс суммарно, end-t
 в пределах 1с на single-face; **SLO гарантируется на production GPU-deploy**
 (memory `dev-vs-prod-hardware`: локальный ПК = dev, production на GPU-серверах).
 
-## Async-путь (fallback в очередь при load > fast-path threshold)
+## Async-путь верификации (основной)
 
-При перегрузке `/verify` переходит в async (`job_id`, поллинг `/jobs/{id}`).
+`/verify_base64` ставит job в `face_verify_queue` → worker (`app.workers.verify_worker`),
+ответ `{"job_id","status":"pending"}` возвращается сразу, результат — через
+long-poll `/jobs/{id}/wait`. Sync fast-path через отдельный `fast_worker` удалён
+(контейнер нигде не поднимался, только холостые circuit-breaker-попытки).
+
 SLO для async:
 
 | SLO async | Таргет | Метрика |
@@ -54,10 +58,9 @@ SLO для async:
 | Result visibility lag | < 500 мс | `VERIFY_RESULT_VISIBLE_LAG_MS` |
 
 Async-path допускает **бóльшую** end-to-end латентность (queue + processing),
-т.к. это throttle-режим при пике нагрузки. SLO < 1с — для fast-path; async
-SLO зафиксирован отдельно (job e2e < 2с). Это честно: ТЗ < 1с относится к
-API response — async-ответ `{"job_id","status":"pending"}` возвращается
-< 1с (`VERIFY_ASYNC_ROUTE_MS`), сам job-результат — через поллинг.
+т.к. это throttle-режим. ТЗ < 1с относится к API response — async-ответ
+`{"job_id","status":"pending"}` возвращается < 1с (`VERIFY_ASYNC_ROUTE_MS`),
+сам job-результат — через поллинг (job e2e < 2с).
 
 ## Availability 99.5% — покрытие
 

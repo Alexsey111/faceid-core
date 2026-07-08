@@ -20,14 +20,11 @@ services:
       - AUTH_ENABLED=false
       - LIVENESS_ENABLED=true
       - LIVENESS_ACTIVE_ENABLED=true
-      # demo не поднимает отдельный fast_worker (profile «disabled» в base compose),
-      # а sync fast-path рассчитан на GPU + рабочий Celery-fallback. На CPU-demo без
-      # Celery-worker'ов fast-path: (1) нет fast_worker → circuit-breaker, (2) fallback
-      # на legacy async. Поэтому отключаем fast-path и идём напрямую в async-очередь
-      # (face_verify_queue) → потребляется кастомным worker (app.workers.verify_worker),
-      # который полностью обрабатывает no-face/quality/spoof. Soft-gate env api (base
-      # compose: QUALITY_GATE_MODE=soft, blur≥25) → кадр веб-камеры доходит до match.
-      - USE_FAST_PATH=false
+      # Путь верификации — единый async: /verify_base64 ставит job в face_verify_queue
+      # → потребляется worker (app.workers.verify_worker), полностью обрабатывает
+      # no-face/quality/spoof (ValueError prepare-фазы → терминальный статус с reason,
+      # а не opaque error). Soft-gate (base compose: QUALITY_GATE_MODE=soft, blur≥25)
+      # → кадр веб-камеры доходит до match. Sync fast-path/fast_worker удалён.
   worker:
     environment:
       - LIVENESS_ENABLED=true

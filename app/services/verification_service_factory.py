@@ -37,15 +37,3 @@ def get_verification_service(db: AsyncSession) -> VerificationService:
         search_service=SearchService(embedding_repo),
         pipeline=get_pipeline(),
     )
-
-
-def get_verification_service_without_pipeline(db: AsyncSession) -> VerificationService:
-    embedding_repo = EmbeddingRepository(db)
-    verification_repo = VerificationRepository(db)
-
-    return VerificationService(
-        embedding_repo=embedding_repo,
-        verification_repo=verification_repo,
-        search_service=SearchService(embedding_repo),
-        load_pipeline=False,
-    )

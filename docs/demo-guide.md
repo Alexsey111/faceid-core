@@ -211,11 +211,10 @@ challenge, `4503` liveness отключён/сервер занят, `1006` ра
 3. **Эталон**: «Снять с камеры» или «Из файла…» → `POST /upload_base64` →
    `embedding_id`.
 4. **«Верифицировать (камера)»** — сама снимает кадр → `POST /verify_base64`.
-   В demo-override `USE_FAST_PATH=false` — запрос идёт через async-очередь
-   `face_verify_queue` (тот же worker, что и новые async-роуты), ответ `pending` →
-   long-poll `/jobs/{id}/wait?timeout=2000` до терминала. Это убирает «зависание на
-   pending», бывшее при отключённом Celery. Чекбокс «требовать liveness (passive)»
-   по умолчанию **вкл** (нагляднее: ответ несёт `liveness_passed`/`liveness_score`).
+   Запрос идёт через async-очередь `face_verify_queue` (worker `app.workers.verify_worker`),
+   ответ `pending` → long-poll `/jobs/{id}/wait?timeout=2000` до терминала.
+   Чекбокс «требовать liveness (passive)» по умолчанию **вкл** (нагляднее: ответ
+   несёт `liveness_passed`/`liveness_score`).
 5. **«Остановить сервис»** — `docker compose ... down -v` (чистит volumes с
    биометрией, 152-ФЗ). То же автоматически при закрытии окна.
 
@@ -263,11 +262,11 @@ challenge, `4503` liveness отключён/сервер занят, `1006` ра
 - `opencv-python` (не headless) — нужен `VideoCapture` к физической камере;
   вынесен в `demo/requirements-demo.txt`, отдельно от основного `requirements.txt`
   (демо-зависимости не нужны прод-сервису).
-- Verify-путь (demo): `USE_FAST_PATH=false` → `verify_base64` ставит job в
-  `face_verify_queue` и возвращает `pending`; приложение long-poll'ит
+- Verify-путь (demo): `verify_base64` ставит job в `face_verify_queue` и
+  возвращает `pending`; приложение long-poll'ит
   `/jobs/{id}/wait?timeout=2000` до терминала (`done`/`error`/`expired`/`failed`),
-  max 30с. Это основной путь в демо (не fallback): Celery-роуты в demo-override
-  отключены, а `face_verify_queue` потребляется одним worker-контейнером.
+  max 30с. `face_verify_queue` потребляется одним worker-контейнером
+  (`app.workers.verify_worker`); Celery-роуты в demo-override отключены.
 - **Диагностика**: стадии лаунчера пишутся в `demo/_demo_launcher.log`
   (`=== launcher start ===` → `[1/4] Python` → `[2/4]` → `[3/4] Dependencies OK`
   → `[4/4] Docker OK` → `[launcher] starting desktop_demo.py` → `rc=…`), а

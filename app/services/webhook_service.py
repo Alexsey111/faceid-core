@@ -202,7 +202,7 @@ async def notify_direct(job_id: str, state: str, payload: dict[str, Any]) -> Non
 
 def notify_sync(job_id: str, state: str, payload: dict[str, Any]) -> None:
     """
-    Sync-вход для синхронных callers (sync verify_sync, sync-роуты).
+    Sync-вход для синхронных callers (sync-роуты verify.py).
     Если event-loop запущен — планирует create_task(...) (fire-and-forget через очередь).
     Иначе — прямая доставка через asyncio.run(notify_direct(...)) (блокирующая,
     ограниченная timeout×retries). Идемпотентность проверяется внутри.
@@ -235,9 +235,9 @@ def fire_sync_webhook(result: Any) -> None:
     """Webhook для sync-верификации (ТЗ 3.2): синтетический job_id sync-<uuid>,
     payload sanitised через VerifyResultStore._sanitize_mapping (выкинет
     embedding/image и пр.). Fire-and-forget. Guard WEBHOOK_ENABLED — внутри
-    notify_sync. Единый источник для /verify_sync (main.py) и sync-роутов
-    (verify.py) — раньше логика дублировалась, что рискованно для sanitize
-    (биометрия в webhook = нарушение 152-ФЗ при рассинхроне)."""
+    notify_sync. Единый источник sanitize для sync-роутов verify.py — раньше
+    логика дублировалась, что рискованно для sanitize (биометрия в webhook =
+    нарушение 152-ФЗ при рассинхроне)."""
     try:
         from uuid import uuid4
         from app.services.verify_result_store import VerifyResultStore

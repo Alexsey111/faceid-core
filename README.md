@@ -82,11 +82,9 @@ Redis. Docker Compose deploy (CPU по умолчанию, GPU-override для C
 flowchart LR
     Client -->|HTTPS + JWT| LB[api_lb nginx]
     LB --> API[FastAPI /api/v1]
-    API -->|sync fast-path| FastW[fast_worker verify_sync]
-    API -->|async| Queue[(Redis queue)]
-    Queue --> Worker[Celery worker]
-    FastW --> Pipe[ML Pipeline V3]
-    Worker --> Pipe
+    API -->|async| Queue[(Redis face_verify_queue)]
+    Queue --> Worker[verify_worker]
+    Worker --> Pipe[ML Pipeline V3]
     Pipe --> Det[RetinaFace/SCRFD detect]
     Det --> QG[Quality gate]
     QG -->|окклюзия| RetryR[status=retry]
@@ -100,7 +98,7 @@ flowchart LR
     API --> MinIO[(MinIO photo transit)]
 ```
 
-**Поток верификации:** API → (sync fast-path `verify_sync` ИЛИ async Celery-очередь) →
+**Поток верификации:** API → async-очередь `face_verify_queue` → `verify_worker` →
 ML Pipeline → детект → quality-gate → passive liveness → ArcFace-эмбеддинг →
 поиск по pgvector/FAISS → decision. При `liveness_mode="active"` liveness доказана
 WS-challenge-протоколом (см. ниже), passive в `/verify` не запускается.
@@ -154,8 +152,9 @@ Cutout/print — статичны, действия не выполняют → 
 > При default `LIVENESS_ACTIVE_REQUIRED=false` passive = frame-level (0.9124) —
 > для доступа по ТЗ ≥98% включать active-gate.
 
-> Active proof принимает только `/verify_base64` (sync fast-path). Multipart-эндпоинты
-> (`/verify`, `/verify_async_file`) токен не несут — для access-control не использовать.
+> Active proof принимает только `/verify_base64` (liveness_mode=active + liveness_token).
+> Multipart-эндпоинты (`/verify`, `/verify_async_file`) токен не несут — для
+> access-control не использовать.
 
 ---
 
@@ -192,7 +191,7 @@ Cutout/print — статичны, действия не выполняют → 
 | POST | `/api/v1/upload` | загрузка эталона (multipart) |
 | POST | `/api/v1/upload_base64` | загрузка эталона (base64) |
 | POST | `/api/v1/verify` | верификация (multipart) |
-| POST | `/api/v1/verify_base64` | верификация (base64, sync fast-path + Celery fallback) — **носит active liveness** |
+| POST | `/api/v1/verify_base64` | верификация (base64, async `face_verify_queue`) — **носит active liveness** |
 | POST | `/api/v1/verify_async_file` | async: file → MinIO → очередь |
 | POST | `/api/v1/verify_async_base64` | async: base64 → очередь |
 | POST | `/api/v1/verify_async` | async JSON (admission-control) |
@@ -251,7 +250,7 @@ docker compose up -d --build
 
 Поднимает postgres (pgvector), redis, minio, api, api_lb, worker, prometheus.
 Healthcheck'и + `restart: unless-stopped` на долгоживущих сервисах (см. runbook).
-Profile-сервисы (`fast_worker`, `worker_metrics`, `worker_fast`/`worker_heavy`,
+Profile-сервисы (`worker_metrics`, `worker_fast`/`worker_heavy`,
 `autoscaler`) подключаются через `--profile`.
 
 ### GPU (production с CUDA)

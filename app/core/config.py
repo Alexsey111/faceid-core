@@ -214,13 +214,9 @@ class Settings(BaseSettings):
     RETINA_DET_SIZE: int = 512
     RETINA_DET_SIZE_SMALL: int = 320
     USE_SIMPLE_IS_GENUINE: bool = True
-    USE_FAST_PATH: bool = True
-    FAST_PATH_MAX_CONCURRENCY: int = 4
-    FAST_WORKER_URL: str = "http://fast_worker:8000"
-    FAST_WORKER_ENABLED: bool = True
-    FAST_WORKER_FAILURES: int = 0
-    FAST_WORKER_MAX_FAILURES: int = 3
-    FAST_WORKER_MAX_CONCURRENCY: int = 4
+    # Лимит concurrent ML-инференса в API-процессе (роут /verify). Раньше был
+    # связан с FAST_WORKER_MAX_CONCURRENCY (sync fast-path), но fast_worker
+    # удалён — путь верификации единый async (face_verify_queue → worker).
     API_INFER_CONCURRENCY: int = 4
     LIVENESS_ENABLED: bool = False
     # Порог решения liveness (применяет caller, не чекер). 0.859 — рекомендация

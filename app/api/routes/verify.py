@@ -10,7 +10,6 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
-import httpx
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,30 +27,19 @@ from app.services.backpressure import (
     current_active_requests,
     get_backpressure_mode,
     get_system_load,
-    should_use_async,
     should_drop_request,
-    try_reserve_fast_path_slot,
     try_reserve_slot,
-)
-from app.services.fast_worker_circuit_breaker import (
-    get_fast_worker_failures,
-    is_fast_worker_enabled,
-    record_fast_worker_failure,
-    record_fast_worker_success,
 )
 from app.services.rate_limiter import RateLimiter
 from app.services.rate_limiter import get_inflight_limit, get_queue_delay
 from app.services.verification_service_factory import (
     get_verification_service,
-    get_verification_service_without_pipeline,
 )
 from app.services.verify_job_queue import VerifyJobQueue
 from app.services.webhook_service import fire_sync_webhook
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
-
-_fast_worker_client: httpx.AsyncClient | None = None
 
 
 def _normalize_priority(value: str | None) -> tuple[str, int]:
@@ -120,61 +108,6 @@ def _apply_active_liveness(result: Any, active_proven: bool) -> Any:
         except Exception:
             pass
     return result
-
-
-def _pick_fast_worker_url() -> str:
-    return settings.FAST_WORKER_URL
-
-
-def get_fast_worker_client() -> httpx.AsyncClient:
-    global _fast_worker_client
-
-    if _fast_worker_client is None:
-        _fast_worker_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(
-                connect=1.0,
-                read=2.0,
-                write=1.0,
-                pool=1.0,
-            ),
-            limits=httpx.Limits(
-                max_connections=100,
-                max_keepalive_connections=50,
-            ),
-        )
-
-    return _fast_worker_client
-
-
-async def _call_fast_worker(
-    client: httpx.AsyncClient,
-    url: str,
-    payload: dict[str, object],
-) -> tuple[dict[str, object], float]:
-    t0 = time.perf_counter()
-    resp = await client.post(f"{url}/verify_sync", json=payload)
-    upstream_http_ms = (time.perf_counter() - t0) * 1000.0
-    resp.raise_for_status()
-    data = resp.json()
-
-    if not data:
-        return data, upstream_http_ms
-
-    terminal_statuses = {
-        "no_face",
-        "spoof",
-        "spoof_detected",
-        "quality_reject",
-        "retry",
-        "processing_failed",
-    }
-
-    if data.get("status") in terminal_statuses:
-        return data, upstream_http_ms
-
-    if "embedding" not in data or data["embedding"] is None:
-        raise HTTPException(status_code=502, detail="fast_worker returned invalid payload")
-    return data, upstream_http_ms
 
 
 async def _enqueue_verify_job(
@@ -277,71 +210,30 @@ async def verify_base64(
     http_request: Request,
     db: AsyncSession = Depends(get_db),
 ):
-    """Fast-path sync verify for low-load use, with Celery fallback."""
+    """Async verify: base64 → MinIO → face_verify_queue → worker.
+
+    Единый путь верификации (sync fast-path через отдельный fast_worker удалён —
+    контейнер нигде не поднимался, только холостые circuit-breaker-попытки).
+    Возвращает {job_id, status:"pending"}; клиент long-poll'ит
+    /jobs/{id}/wait до терминала. Носитель active liveness (liveness_mode=active
+    + liveness_token) — валидируется ДО тяжёлой работы в _resolve_liveness.
+    """
     queue_delay = get_queue_delay()
     dynamic_limit = get_inflight_limit(queue_delay)
 
     RateLimiter.check(http_request, "verify", limit=dynamic_limit)
 
     # Active liveness: валидируем+consumes token ДО тяжёлой работы (single-use).
-    effective_require_liveness, active_proven = _resolve_liveness(request)
+    # active_proven НЕ пробрасывается в async-результат (worker не знает active
+    # proof) — как в /verify_async_base64; для онлайн-доступа liveness_passed
+    # выставляется клиентом по факту пройденного challenge (token уже consumed =
+    # допуск подтверждён).
+    effective_require_liveness, _active_proven = _resolve_liveness(request)
 
     image_bytes = base64.b64decode(request.image)
 
     if len(image_bytes) > MAX_IMAGE_SIZE:
         raise HTTPException(status_code=400, detail="Image too large")
-
-    if settings.USE_FAST_PATH and is_fast_worker_enabled():
-        if not should_use_async():
-            if try_reserve_fast_path_slot():
-                try:
-                    t_start = time.time()
-                    client = get_fast_worker_client()
-                    pipeline_result, upstream_http_ms = await _call_fast_worker(
-                        client,
-                        _pick_fast_worker_url(),
-                        request.model_dump(),
-                    )
-                    logger.warning(
-                        "fast_worker_timing upstream_http_ms=%.2f worker_total_ms=%s wait_for_slot_ms=%s",
-                        upstream_http_ms,
-                        pipeline_result.get("worker_total_ms"),
-                        pipeline_result.get("wait_for_slot_ms"),
-                    )
-                    logger.warning(
-                        "fast_worker_identity worker_hostname=%s worker_pid=%s",
-                        pipeline_result.get("worker_hostname"),
-                        pipeline_result.get("worker_pid"),
-                    )
-                    record_fast_worker_success()
-
-                    service = get_verification_service_without_pipeline(db)
-                    result = await service.verify_from_pipeline_result(
-                        pipeline_result,
-                        image_bytes=image_bytes,
-                        user_id=request.user_id,
-                        require_liveness=effective_require_liveness,
-                        check_replay=True,
-                        t_start=t_start,
-                    )
-                    result = _apply_active_liveness(result, active_proven)
-                    fire_sync_webhook(result)
-                    return result
-                except Exception as exc:
-                    failures = record_fast_worker_failure()
-                    logger.warning(
-                        "fast_worker_unavailable, falling back to async queue failures=%s enabled=%s error=%s",
-                        failures,
-                        is_fast_worker_enabled(),
-                        exc,
-                    )
-                finally:
-                    decrement_active()
-    elif settings.USE_FAST_PATH:
-        logger.warning(
-            "fast_worker_circuit_open, using celery fallback failures=%s",
-            get_fast_worker_failures(),
-        )
 
     job_id = get_request_id(http_request)
     request_received_time = time.time()

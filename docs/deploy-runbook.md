@@ -63,7 +63,7 @@ docker compose up -d
 
 По умолчанию поднимаются: `postgres`, `postgres_test`, `redis`, `minio`, `api`,
 `api_lb`, `worker`, `prometheus`. Профильные/`disabled`-сервисы
-(`fast_worker`, `worker_metrics`, `worker_fast/heavy`, `autoscaler`) — через
+(`worker_metrics`, `worker_fast/heavy`, `autoscaler`) — через
 `--profile <name>`.
 
 ## 3. Сборка: GPU (production с CUDA)
@@ -186,9 +186,9 @@ curl -s -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
 При `require_liveness=true` **без** active proof (passive) → `403
 active_liveness_required` с инструкцией пройти challenge.
 
-**Носители active proof**: только `/verify_base64` (sync fast-path, онлайн-допуск)
-принимает `liveness_mode=active` + `liveness_token`. `/verify` (multipart),
-`/verify_async_file` и `/verify_async` не несут токен — при
+**Носители active proof**: только `/verify_base64` (async `face_verify_queue`,
+онлайн-допуск) принимает `liveness_mode=active` + `liveness_token`. `/verify`
+(multipart), `/verify_async_file` и `/verify_async` не несут токен — при
 `LIVENESS_ACTIVE_REQUIRED=true` и `require_liveness=true` они возвращают 403 с
 направлением на `/verify_base64`; для access-control их использовать не нужно.
 

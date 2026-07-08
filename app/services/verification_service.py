@@ -45,8 +45,9 @@ logger = logging.getLogger("verification")
 # в event loop API-процесса. get_verification_service(db) создаёт новый инстанс
 # сервиса на каждый запрос, поэтому семафор обязан быть общим (модульным).
 # Создаётся лениво: в однопоточном event loop проверка + создание без await
-# между ними атомарны, отдельный lock не нужен. По умолчанию совпадает с
-# доказанной конкуренцией fast_worker (FAST_WORKER_MAX_CONCURRENCY=4).
+# между ними атомарны, отдельный lock не нужен. Лимит — settings.API_INFER_CONCURRENCY
+# (по умолчанию 4; раньше был связан с FAST_WORKER_MAX_CONCURRENCY, но fast_worker
+# удалён — путь верификации единый async через face_verify_queue).
 _infer_semaphore: Optional[asyncio.Semaphore] = None
 
 

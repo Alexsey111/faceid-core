@@ -36,6 +36,5 @@ docker compose -f docker-compose.node2.yml --env-file docker-compose.node2.env u
 
 ## Notes
 
-- `FAST_WORKER_URL` stays on node 1 because the API talks to it by service name.
 - Node 2 does not run Redis, Postgres, or MinIO locally.
 - The worker container needs network access to node 1 ports `5432`, `6379`, and `9000`.
