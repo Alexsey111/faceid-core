@@ -48,7 +48,8 @@ asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 markers = [
-    "timeout: timeout for long-running tests"
+    "timeout: timeout for long-running tests",
+    "integration: реальный Redis/DB/инфра (не чистый unit)"
 ]
 
 # -------------------------
