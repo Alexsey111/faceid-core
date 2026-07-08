@@ -1,27 +1,39 @@
 @echo off
 REM FaceID Core desktop-demo launcher (Windows). Double-click to run.
-REM Checks Python/Docker/deps, then starts demo/desktop_demo.py.
-REM Unconditional pause at the end: window never closes by itself, traceback is visible.
+REM ASCII-only (cmd on ru-Win misreads UTF-8 in .bat). Unconditional pause at :end.
 setlocal enableextensions
 cd /d "%~dp0\.."
 title FaceID Core - desktop demo launcher
 echo === FaceID Core - desktop demo ===
 echo.
 
-REM --- 1. Detect Python: python (PATH, where deps are installed) -> py -3 ---
-REM Probe via --version (where is unreliable for App Paths / Store aliases here).
+REM --- 1. Detect Python: prefer one that ALREADY has deps (filters Store stub) ---
+REM A Microsoft Store stub without a real install has no cv2 -> import fails ->
+REM we fall through to py launcher. Prefer python (PATH) then py -3.11 then py -3.
 set "PY="
-python --version >nul 2>nul
+python -c "import cv2,requests,websocket,PIL" >nul 2>nul
 if not errorlevel 1 set "PY=python"
+if not defined PY (
+    py -3.11 -c "import cv2,requests,websocket,PIL" >nul 2>nul
+    if not errorlevel 1 set "PY=py -3.11"
+)
+if not defined PY (
+    py -3 -c "import cv2,requests,websocket,PIL" >nul 2>nul
+    if not errorlevel 1 set "PY=py -3"
+)
+if not defined PY (
+    REM none has deps yet; pick any available interpreter, we will pip-install below
+    python --version >nul 2>nul
+    if not errorlevel 1 set "PY=python"
+)
 if not defined PY (
     py -3 --version >nul 2>nul
     if not errorlevel 1 set "PY=py -3"
 )
 if not defined PY (
     echo [ERROR] Python not found. Install Python 3.10+ from https://python.org
-    echo         and tick "Add Python to PATH" during install.
-    pause
-    exit /b 1
+    echo         and tick "Add Python to PATH" during install, then rerun.
+    goto :end
 )
 echo [1/4] Python: %PY%
 %PY% --version
@@ -32,21 +44,19 @@ REM --- 2. Version >= 3.10 ---
 if errorlevel 1 (
     echo [ERROR] Python 3.10+ required. Current:
     %PY% --version
-    pause
-    exit /b 1
+    goto :end
 )
 echo [2/4] Python version OK
 echo.
 
-REM --- 3. Demo dependencies ---
-%PY% -c "import cv2, requests, websocket, PIL" >nul 2>nul
+REM --- 3. Demo dependencies (install if missing) ---
+%PY% -c "import cv2,requests,websocket,PIL" >nul 2>nul
 if errorlevel 1 (
     echo [3/4] Installing demo deps (opencv/requests/websocket-client/Pillow)...
     %PY% -m pip install -r demo\requirements-demo.txt
     if errorlevel 1 (
         echo [ERROR] Failed to install dependencies. Check network connection.
-        pause
-        exit /b 1
+        goto :end
     )
 ) else (
     echo [3/4] Dependencies OK
@@ -57,14 +67,12 @@ REM --- 4. Docker ---
 where docker >nul 2>nul
 if errorlevel 1 (
     echo [ERROR] Docker not found. Install Docker Desktop from https://docker.com and add to PATH.
-    pause
-    exit /b 1
+    goto :end
 )
 docker info >nul 2>nul
 if errorlevel 1 (
     echo [ERROR] Docker daemon is not running. Start Docker Desktop and retry.
-    pause
-    exit /b 1
+    goto :end
 )
 echo [4/4] Docker OK
 echo.
@@ -81,8 +89,10 @@ if %RC% neq 0 (
     type demo\_demo_stdout.log
     echo --- end of log ---
 )
-echo If a traceback is shown above - send it in full.
-echo If exit code is 0 - everything completed normally.
 echo.
+
+:end
+echo.
+echo === Launcher finished. Press any key to close this window. ===
 pause
 endlocal

@@ -24,6 +24,7 @@ import subprocess
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Callable
 
@@ -82,6 +83,24 @@ BADGE_COLORS: dict[str, str] = {
 }
 
 TERMINAL_JOB_STATUSES = {"done", "error", "expired", "failed"}
+
+# Куда пишем traceback при падении (лог из окна не копируется — файл можно прислать).
+_CRASH_LOG = REPO_ROOT / "demo" / "_demo_crash.log"
+
+
+def _write_crash(exc_type: Any, exc: Any, tb: Any) -> None:
+    """Записать traceback в demo/_demo_crash.log (перезапись). 152-ФЗ: только текст
+    исключения, без кадров/эмбеддингов (их в traceback от демо не бывает)."""
+    try:
+        with open(_CRASH_LOG, "w", encoding="utf-8") as f:
+            f.write("".join(traceback.format_exception(exc_type, exc, tb)))
+    except Exception:
+        pass
+
+
+def _threading_excepthook(args: Any) -> None:
+    """Ловим падения worker-потоков (иначе они гибнут молча)."""
+    _write_crash(args.exc_type, args.exc_value, args.exc_traceback)
 
 
 # ================================= Утилиты =================================
@@ -537,7 +556,8 @@ class DesktopDemoApp(tk.Tk):
         top.pack(fill="x", pady=(0, 6))
         tk.Label(top, text="user_id:", bg="#1e1e1e", fg="#dddddd",
                  font=("Segoe UI", 10)).pack(side="left")
-        self.user_var = tk.StringVar(value="demo_user")
+        # Серверный /upload_base64 делает int(user_id) — нужен ЧИСЛОВОЙ id.
+        self.user_var = tk.StringVar(value="1001")
         ttk.Entry(top, textvariable=self.user_var, width=18).pack(side="left", padx=4)
         self.btn_start = ttk.Button(top, text="Запустить сервис", command=self._on_start)
         self.btn_start.pack(side="left", padx=4)
@@ -798,10 +818,9 @@ class DesktopDemoApp(tk.Tk):
     def _do_upload(self, image_b64: str | None) -> None:
         if not self._guard_busy():
             return
-        user_id = self.user_var.get().strip()
-        if not user_id:
+        user_id = self._numeric_user_id()
+        if user_id is None:
             self._busy = False
-            self._append_log("[эталон] укажите user_id")
             return
         self.ref_status.configure(text="загружаю…", foreground="#e0a93a")
         self._append_log(f"[эталон] upload user_id={user_id}…")
@@ -832,10 +851,9 @@ class DesktopDemoApp(tk.Tk):
     def _on_verify(self, from_cam: bool) -> None:
         if not self._guard_busy():
             return
-        user_id = self.user_var.get().strip()
-        if not user_id:
+        user_id = self._numeric_user_id()
+        if user_id is None:
             self._busy = False
-            self._append_log("[verify] укажите user_id")
             return
         if from_cam:
             b64 = self.camera.grab_jpeg_b64()
@@ -1068,9 +1086,9 @@ class DesktopDemoApp(tk.Tk):
         """Авто-переход: verify_base64 с liveness_mode=active + токен. Токен single-use,
         TTL 120с — уходит в запрос немедленно; после отправки остаётся только в локальной
         переменной worker-потока и собирается GC (не файл/env)."""
-        user_id = self.user_var.get().strip()
+        user_id = self._numeric_user_id()
         b64 = self.camera.grab_jpeg_b64()
-        if not user_id or not b64:
+        if user_id is None or not b64:
             self._busy = False
             self._set_actions_state()
             self._append_log("[challenge] нет user_id/кадра для авто-verify")
@@ -1089,6 +1107,21 @@ class DesktopDemoApp(tk.Tk):
         threading.Thread(target=worker, daemon=True).start()
 
     # ------------------------------- helpers -------------------------------
+
+    def _numeric_user_id(self) -> str | None:
+        """Серверный /upload_base64 делает int(user_id) — нужен целочисленный id.
+        Возвращает строку-число или None (с логом причины)."""
+        uid = self.user_var.get().strip()
+        if not uid:
+            self._append_log("[демо] укажите user_id (целое число)")
+            return None
+        if not uid.isdigit():
+            self._append_log(
+                f"[демо] user_id должен быть целым числом (сервер: int(user_id)). "
+                f"Текущее значение не подходит: «{uid}»"
+            )
+            return None
+        return uid
 
     def _guard_busy(self) -> bool:
         if not self.service_ready:
@@ -1153,6 +1186,8 @@ class DesktopDemoApp(tk.Tk):
 
 
 def main() -> None:
+    sys.excepthook = _write_crash
+    threading.excepthook = _threading_excepthook
     app = DesktopDemoApp()
     app.mainloop()
 
