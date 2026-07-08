@@ -72,11 +72,16 @@ echo [INFO] Starting desktop demo... Application window opens separately.
 echo [INFO] Do NOT close this console - Python logs are written here.
 echo       Close the demo via the app window (Stop service button + close).
 echo.
-%PY% demo\desktop_demo.py
+%PY% demo\desktop_demo.py > demo\_demo_stdout.log 2>&1
 set "RC=%errorlevel%"
 echo.
 echo === Application exited (exit code %RC%) ===
-echo If a traceback (Traceback most recent call last) is shown above - send it in full.
+if %RC% neq 0 (
+    echo --- traceback from demo\_demo_stdout.log ---
+    type demo\_demo_stdout.log
+    echo --- end of log ---
+)
+echo If a traceback is shown above - send it in full.
 echo If exit code is 0 - everything completed normally.
 echo.
 pause
