@@ -278,8 +278,12 @@ class ApiClient:
         return data
 
     def _poll_job(self, job_id: str) -> dict[str, Any]:
-        """Long-poll /jobs/{id}/wait до терминального статуса, max 30с."""
-        deadline = time.monotonic() + 30
+        """Long-poll /jobs/{id}/wait до терминального статуса, max 60с.
+
+        60с (вместо 30с) — запас под cold-start: первый verify после подъёма стека
+        ждёт загрузки ONNX-моделей (ArcFace/SCRFD/MiniFASNet) в worker на CPU,
+        что может занимать >30с. Тёплые запросы укладываются в секунды."""
+        deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             try:
                 r = self._s.get(
