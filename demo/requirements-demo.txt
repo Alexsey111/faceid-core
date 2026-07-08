@@ -1,0 +1,7 @@
+# Зависимости desktop-демо (Windows, tkinter + OpenCV).
+# Вынесены отдельно от основного requirements.txt — демо-пакеты не нужны
+# прод-сервису. Устанавливаются через demo/run_demo.bat (pip install -r).
+opencv-python>=4.8,<5
+requests>=2.31
+websocket-client>=1.6
+Pillow>=10.0

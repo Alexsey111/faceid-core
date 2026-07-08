@@ -171,3 +171,96 @@ challenge, `4503` liveness отключён/сервер занят, `1006` ра
   запуск через `docker-compose.demo.yml` (базовый compose держит `false`).
 - Если `/demo/` отдаёт 404 — проверьте `docker compose exec api ls /app/demo`
   (Dockerfile должен скопировать `demo/`).
+
+---
+
+## 8. Desktop-демо (Windows, нативное окно)
+
+Альтернатива веб-демо — **нативное desktop-приложение** на tkinter + OpenCV
+(`demo/desktop_demo.py`), запускаемое двойным кликом по `demo/run_demo.bat`.
+Назначение то же — презентация сервиса, но без браузера/HTTPS/getUserMedia:
+камера через `cv2.VideoCapture(0)`, API через `requests`/`websocket-client`,
+превью кадра через `PIL.ImageTk`.
+
+### Когда выбирать desktop, а не web
+
+- Презентация на Windows-ПК без браузера или где `getUserMedia` неудобен
+  (корпоративные политики, self-signed HTTPS).
+- Нужен «one-click» запуск: .bat сам поднимает demo-стек и открывает окно.
+- Веб-демо (`/demo/`) остаётся доступным параллельно — desktop его не заменяет.
+
+### Запуск
+
+```
+Двойной клик demo/run_demo.bat
+```
+
+`.bat` последовательно проверяет: Python ≥3.10 в PATH → наличие пакетов
+(`cv2, requests, websocket, PIL`; при отсутствии ставит из
+`demo/requirements-demo.txt`) → Docker + запущенный демон (`docker info`) →
+запускает `python demo/desktop_demo.py`. Консоль .bat остаётся открытой — туда
+пишется stdout/stderr Python (traceback при краше → `pause`).
+
+В окне:
+
+1. **«Запустить сервис»** — приложение само выполняет
+   `docker compose -f docker-compose.yml -f docker-compose.demo.yml up -d --build
+   postgres redis minio api worker` (отсекает `api_lb`/`prometheus`/профильные
+   worker'ы — прод-сервисы демо не нужны) и ждёт `GET /ready` (≤90с).
+2. Превью камеры живёт сразу (камера стартует до сервиса — превью не зависит от API).
+3. **Эталон**: «Снять с камеры» или «Из файла…» → `POST /upload_base64` →
+   `embedding_id`.
+4. **«Верифицировать (камера)»** — сама снимает кадр → `POST /verify_base64`
+   (sync fast-path, при `pending` — long-poll `/jobs/{id}/wait`). Чекбокс
+   «требовать liveness (passive)» по умолчанию **вкл** (нагляднее: ответ несёт
+   `liveness_passed`/`liveness_score`).
+5. **«Остановить сервис»** — `docker compose ... down -v` (чистит volumes с
+   биометрией, 152-ФЗ). То же автоматически при закрытии окна.
+
+### Минимум действий (автоматизация)
+
+- **Одна кнопка** «Верифицировать (камера)» сама снимает кадр — отдельный «захват»
+  не нужен.
+- **Retry (окклюзия)**: при `status=retry` (`reason=remove_occlusion`) UI сам
+  показывает оверлей «Снимите маску/очки» (по `quality_details.occlusion_flags`)
+  и переименовывает кнопку в «Переснять». Без авто-зацикливания — пересъёмка
+  только по клику (пользователь должен реально снять предмет).
+- **Active challenge авто-переход**: при `challenge_recommended=true` или
+  `confidence=low` (серая зона) и включённом чекбоксе «авто active-challenge»
+  (default вкл) окно само стартует challenge — оверлей «поверните голову /
+  моргните», стрим JPEG-кадров каждые 600мс (≤30) в WS. По `is_live=true` +
+  `liveness_token` автоматически вызывает `/verify_base64` с
+  `liveness_mode=active` + токен (single-use, TTL 120с). Пользователь только
+  выполняет действия перед камерой. Кнопка «Запустить вручную» — для повтора.
+- Active gate — **soft**: `LIVENESS_ACTIVE_REQUIRED` не трогается (остаётся
+  `false`), `docker-compose.demo.yml` не правится. Passive-verify работает;
+  active — по рекомендации или вручную.
+
+### Безопасность (152-ФЗ), как и в веб-демо
+
+- Кадры **только в памяти**: `cv2.imencode` → bytes/base64 в локальных
+  переменных, `del`/GC после отправки. Никаких `cv2.imwrite`, temp-файлов,
+  логов с base64. Лог-зона — только человекочитаемые строки (status, score).
+- `liveness_token` — атрибут `ChallengeSession` в памяти, не файл/env; уходит в
+  запрос немедленно и собирается GC.
+- `down -v` чистит volumes postgres/minio при остановке/закрытии.
+- `AUTH_ENABLED=false` — только demo-override; UI не хранит JWT/X-API-Key,
+  не читает `.env` (прод-секреты не светятся). `GET /api/v1/config` — только
+  6 read-only порогов.
+
+### Подводные камни
+
+- **Закрывайте окно кнопкой «Стоп» / крестиком окна**, не консоль .bat — иначе
+  Python убивается без `down -v` (контейнеры остаются, volumes не чистятся).
+  Крестик окна корректно стопает сервис в daemon-потоке.
+- **Камера занята** другим приложением (вкл. веб-демо в браузере с активной
+  `getUserMedia`) → `VideoCapture(0)` упадёт; лог подскажет закрыть конфликтующее
+  приложение. Web-демо и desktop одновременно на одной камере не работают.
+- Только Windows (`.bat`); tkinter+cv2 кроссплатформенны, но лаунчер
+  Windows-специфичен. Docker Desktop должен быть запущен до старта .bat.
+- `opencv-python` (не headless) — нужен `VideoCapture` к физической камере;
+  вынесен в `demo/requirements-demo.txt`, отдельно от основного `requirements.txt`
+  (демо-зависимости не нужны прод-сервису).
+- Async-fallback verify: при `{job_id, status:"pending"}` приложение long-poll'ит
+  `/jobs/{id}/wait?timeout=2000` до терминала (`done`/`error`/`expired`/`failed`),
+  max 30с.
