@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.verification_job_repo import VerificationJobRepository
 from app.core.config import settings
+from app.core.timing import now_epoch_ns
 from app.api._helpers import MAX_IMAGE_SIZE, get_request_id
 from app.db.session import get_db
 from app.infrastructure.minio_client import MinioClient
@@ -44,8 +45,8 @@ from app.services.verification_service_factory import (
     get_verification_service,
     get_verification_service_without_pipeline,
 )
+from app.services.verify_job_queue import VerifyJobQueue
 from app.services.webhook_service import fire_sync_webhook
-from app.workers.tasks.verify_task import verify_task
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -54,6 +55,13 @@ _fast_worker_client: httpx.AsyncClient | None = None
 
 
 def _normalize_priority(value: str | None) -> tuple[str, int]:
+    """Валидация priority ({high, low}) → 400 при некорректном.
+
+    Celery-приоритет (возвращаемый int) больше не используется — постановка идёт в
+    единую face_verify_queue (VerifyJobQueue), приоритизация — на стороне worker'а.
+    Валидация сохранена для обратно-совместимого 400-контракта legacy-роутов
+    (/verify_async_file, /verify_async_base64, /verify_base64 fallback).
+    """
     priority = (value or "high").strip().lower()
     if priority not in {"high", "low"}:
         raise HTTPException(status_code=400, detail="Invalid priority")
@@ -185,9 +193,9 @@ async def _enqueue_verify_job(
     await job_repo.create(job_id=job_id, status=JobStatus.pending)
     await db.commit()
 
+    # Валидация priority (400 при некорректном) — до тяжёлой MinIO/redis-работы.
+    priority_name, _ = _normalize_priority(priority)
     minio_client = MinioClient()
-    queue_name = "verify_heavy" if require_liveness else "verify_fast"
-    priority_name, celery_priority = _normalize_priority(priority)
 
     try:
         await asyncio.to_thread(
@@ -196,17 +204,22 @@ async def _enqueue_verify_job(
             image_bytes,
             content_type,
         )
-        verify_task.apply_async(
-            kwargs={
-                "job_id": job_id,
-                "image_url": object_name,
-                "user_id": user_id,
-                "require_liveness": require_liveness,
-                "request_received_time": request_received_time,
-            },
-            queue=queue_name,
-            priority=celery_priority,
-        )
+        # Постановка в face_verify_queue (потребляется app.workers.verify_worker).
+        # Раньше использовался Celery (verify_heavy/verify_fast), но в default-deploy
+        # Celery-worker'ы отключены (profiles: disabled) → задания зависали pending.
+        # VerifyJobQueue использует тот же worker, что и новые async-роуты, и полностью
+        # обрабатывает no-face/quality_reject/spoof (ловит pipeline ValueError →
+        # terminal). job_id передаём свой — он уже зафиксирован в DB/MinIO и отдан
+        # клиенту для поллинга /jobs/{id}/wait.
+        accepted_at_ns = int(request_received_time * 1_000_000_000)
+        enqueue_payload = {
+            "image_url": object_name,
+            "user_id": user_id,
+            "require_liveness": require_liveness,
+            "accepted_at_ns": accepted_at_ns,
+            "enqueued_at_ns": now_epoch_ns(),
+        }
+        await VerifyJobQueue.enqueue_job(enqueue_payload, admission=None, job_id=job_id)
     except Exception as exc:
         await job_repo.update(job_id, status=JobStatus.failed, error=str(exc))
         await db.commit()
@@ -217,8 +230,8 @@ async def _enqueue_verify_job(
         extra={
             "job_id": job_id,
             "image_url": object_name,
-            "queue": queue_name,
-            "priority": priority_name,
+            "queue": VerifyJobQueue.QUEUE_NAME,
+            "priority": priority,
         },
     )
 

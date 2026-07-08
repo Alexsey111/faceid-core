@@ -291,6 +291,50 @@ def _build_result_payload(
     return payload
 
 
+def _classify_prepare_exception(exc: BaseException) -> dict[str, Any] | None:
+    """Маппинг ValueError из _prepare_face_from_detection в осмысленный терминальный
+    статус (no_face/quality_reject/processing_failed).
+
+    Эти исключения — НЕ серверный сбой, а ожидаемое условие «нет годного лица»:
+      • "Face not detected" / "no face"      → no_face
+      • "Multiple faces not allowed"        → no_face (reason=multiple_faces)
+      • "bad crop" / "Empty face crop"      → quality_reject (reason=bad_crop)
+      • "Low confidence face detection"    → quality_reject (reason=low_confidence)
+    Прочие ValueError → processing_failed/invalid_image.
+    Не-ValueError → None (настоящий сбой → set_error, _sanitize).
+
+    Возвращает {result, outcome, terminal_state} или None. result НЕ содержит
+    ключ "error" (используем reason/error_code) → _sanitize_mapping его не вырежет
+    → клиент получает нормальный status+reason для UI/retry (а не opaque "error").
+    terminal_state влияет только на метрики/finalize; envelope-статус для set_done
+    всегда "done", поэтому клиент видит result.status.
+    """
+    if not isinstance(exc, ValueError):
+        return None
+    msg = str(exc).lower()
+    if "no face" in msg or "not detected" in msg:
+        status, reason, outcome = "no_face", "no_face", "no_face"
+    elif "multiple" in msg:
+        status, reason, outcome = "no_face", "multiple_faces", "no_face"
+    elif "bad crop" in msg or "empty face crop" in msg:
+        status, reason, outcome = "quality_reject", "bad_crop", "quality_reject"
+    elif "low confidence" in msg:
+        status, reason, outcome = "quality_reject", "low_confidence", "quality_reject"
+    else:
+        status, reason, outcome = "processing_failed", "invalid_image", "processing_failed"
+    terminal_state = "reject" if status in {"no_face", "quality_reject"} else "error"
+    result = {
+        "status": status,
+        "reason": reason,
+        "error_code": reason,
+        "liveness_passed": False,
+        "replay_detected": False,
+        "match_score": None,
+        "confidence": None,
+    }
+    return {"result": result, "outcome": outcome, "terminal_state": terminal_state}
+
+
 def _build_technical_timestamps(
     *,
     queue_popped_at: float | None = None,
@@ -1213,6 +1257,28 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     prepared_jobs.append(item)
             except Exception as exc:
                 inc_async_stage_failure("pipeline", exc.__class__.__name__)
+                # ValueError из _prepare_face_from_detection — это НЕ серверный сбой, а
+                # ожидаемое условие «нет годного лица» (Face not detected / Multiple
+                # faces / bad crop / Empty face crop / Low confidence). Раньше такие
+                # кадры уходили в set_error → _sanitize вырезало reason → клиент видел
+                # opaque status="error" без причины. Маппим в осмысленный терминальный
+                # статус (no_face/quality_reject) с reason — результат без ключа "error"
+                # НЕ санитизируется, клиент получает нормальный статус для UI/retry.
+                # Прочие исключения (RuntimeError, неожидаемые) — настоящий сбой → set_error.
+                prepared_failure = _classify_prepare_exception(exc)
+                if prepared_failure is not None:
+                    logger.info(
+                        "verify_prepare_rejected batch_size=%s reason=%s msg=%s",
+                        len(batch_candidates),
+                        prepared_failure["outcome"],
+                        exc,
+                    )
+                else:
+                    logger.exception(
+                        "verify_prepare_failed batch_size=%s error=%s",
+                        len(batch_candidates),
+                        exc,
+                    )
                 for item in batch_candidates:
                     job_id = item["job_id"]
                     created_at = item["created_at"]
@@ -1226,24 +1292,44 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                         completed_at_ns=int(time.time() * 1_000_000_000),
                         result_visible_at_ms=int(time.time() * 1000.0),
                     )
-                    result_write_ms = _timed_result_write(
-                        VerifyResultStore.set_error,
-                        job_id,
-                        str(exc),
-                        write_metrics,
-                        technical_timestamps=technical_timestamps,
-                    )
-                    _complete_terminal_job_inline(
-                        job_id=job_id,
-                        terminal_state="error",
-                        created_at=created_at,
-                        job_started_at=job_started_at,
-                        dequeued_at=dequeued_at,
-                        result_write_ms=result_write_ms,
-                        claim_at=float(item.get("worker_claimed_at_ns", now_epoch_ns())) / 1_000_000_000.0,
-                        job_timings=job_timings,
-                        outcome="error",
-                    )
+                    if prepared_failure is not None:
+                        result_write_ms = _timed_result_write(
+                            VerifyResultStore.set_done,
+                            job_id,
+                            dict(prepared_failure["result"]),
+                            write_metrics,
+                            technical_timestamps=technical_timestamps,
+                        )
+                        _complete_terminal_job_inline(
+                            job_id=job_id,
+                            terminal_state=prepared_failure["terminal_state"],
+                            created_at=created_at,
+                            job_started_at=job_started_at,
+                            dequeued_at=dequeued_at,
+                            result_write_ms=result_write_ms,
+                            claim_at=float(item.get("worker_claimed_at_ns", now_epoch_ns())) / 1_000_000_000.0,
+                            job_timings=job_timings,
+                            outcome=prepared_failure["outcome"],
+                        )
+                    else:
+                        result_write_ms = _timed_result_write(
+                            VerifyResultStore.set_error,
+                            job_id,
+                            str(exc),
+                            write_metrics,
+                            technical_timestamps=technical_timestamps,
+                        )
+                        _complete_terminal_job_inline(
+                            job_id=job_id,
+                            terminal_state="error",
+                            created_at=created_at,
+                            job_started_at=job_started_at,
+                            dequeued_at=dequeued_at,
+                            result_write_ms=result_write_ms,
+                            claim_at=float(item.get("worker_claimed_at_ns", now_epoch_ns())) / 1_000_000_000.0,
+                            job_timings=job_timings,
+                            outcome="error",
+                        )
 
         terminal_jobs: list[dict[str, Any]] = []
         ok_jobs = []
@@ -1503,6 +1589,14 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     len(ok_jobs),
                 )
         except Exception as exc:
+            # Batch-level сбой (например, общий vector-search по батчу). Причина —
+            # в server-лог (traceback, метаданные); клиентам уходит status="error"
+            # без деталей (_sanitize, 152-ФЗ).
+            logger.exception(
+                "verify_batch_failed batch_size=%s error=%s",
+                len(ok_jobs),
+                exc,
+            )
             for item in ok_jobs:
                 job_id = item["job_id"]
                 created_at = item["created_at"]
@@ -1674,6 +1768,17 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     )
                 except Exception as exc:
                     inc_async_stage_failure("pipeline", exc.__class__.__name__)
+                    # Server-side лог причины сбоя verify_from_pipeline_result.
+                    # Клиенту уходит только status="error" (детали вырезаются
+                    # _sanitize_mapping из result — 152-ФЗ, биометрия/служебное не
+                    # утекает в ответ). Здесь — только traceback (метаданные, без
+                    # кадров/эмбеддингов), чтобы диагностировать «status=error без
+                    # причины» в логах worker'а.
+                    logger.exception(
+                        "verify_job_failed job_id=%s prepared_status=%s",
+                        job_id,
+                        prepared.get("status"),
+                    )
                     dequeued_at = item.get("dequeued_at", job_started_at)
                     write_metrics = _build_metrics(created_at, job_started_at, time.time(), dequeued_at=dequeued_at)
                     technical_timestamps = _build_technical_timestamps(

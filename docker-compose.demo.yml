@@ -20,15 +20,13 @@ services:
       - AUTH_ENABLED=false
       - LIVENESS_ENABLED=true
       - LIVENESS_ACTIVE_ENABLED=true
-      # Демо идёт через async-очередь (worker), НЕ через sync fast-path.
-      # Причина: fast_worker (profile «disabled») не поднимается оркестратором демо,
-      # но если от прошлого полного `docker compose up` остался Running stale-контейнер
-      # fast_worker — api (USE_FAST_PATH=true default) пойдёт в sync-путь. fast_worker
-      # в своём env НЕ переопределяет QUALITY_GATE_MODE → дефолт «hard» (blur≥45,
-      # face_side≥72) → кадр с веб-камеры отбрасывается как quality_reject, и
-      # _normalize_verify_sync_result выкидывает reason → клиент видит пустые
-      # quality_details. async worker имеет soft-gate (base compose) → кадр проходит
-      # до match. Production fast-path НЕ затрагивается — это demo-only routing.
+      # demo не поднимает отдельный fast_worker (profile «disabled» в base compose),
+      # а sync fast-path рассчитан на GPU + рабочий Celery-fallback. На CPU-demo без
+      # Celery-worker'ов fast-path: (1) нет fast_worker → circuit-breaker, (2) fallback
+      # на legacy async. Поэтому отключаем fast-path и идём напрямую в async-очередь
+      # (face_verify_queue) → потребляется кастомным worker (app.workers.verify_worker),
+      # который полностью обрабатывает no-face/quality/spoof. Soft-gate env api (base
+      # compose: QUALITY_GATE_MODE=soft, blur≥25) → кадр веб-камеры доходит до match.
       - USE_FAST_PATH=false
   worker:
     environment:

@@ -282,7 +282,12 @@ class VerifyJobQueue:
         return decision
 
     @classmethod
-    def enqueue(cls, payload: Dict[str, Any], admission: AdmissionDecision | None = None) -> str:
+    def enqueue(
+        cls,
+        payload: Dict[str, Any],
+        admission: AdmissionDecision | None = None,
+        job_id: str | None = None,
+    ) -> str:
         decision = admission or cls._evaluate_admission_from_values(
             queue_len=cls._get_queue_length(),
             inflight=cls._get_inflight(),
@@ -302,7 +307,9 @@ class VerifyJobQueue:
                 decision=decision,
             )
 
-        job_id = str(uuid.uuid4())
+        # job_id: caller может передать свой (используется для DB-записи, MinIO
+        # object_name и поллинга клиентом через /jobs/{id}/wait). Иначе генерируем.
+        job_id = job_id or str(uuid.uuid4())
 
         job = {
             "job_id": job_id,
@@ -384,5 +391,6 @@ class VerifyJobQueue:
         cls,
         payload: Dict[str, Any],
         admission: AdmissionDecision | None = None,
+        job_id: str | None = None,
     ) -> str:
-        return await asyncio.to_thread(cls.enqueue, payload, admission)
+        return await asyncio.to_thread(cls.enqueue, payload, admission, job_id)
