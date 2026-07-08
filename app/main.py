@@ -98,6 +98,21 @@ def _normalize_verify_sync_result(result: dict[str, Any]) -> dict[str, Any]:
         payload["liveness_passed"] = bool(result.get("liveness_passed", False))
         payload["liveness_score"] = float(result.get("liveness_score", 0.0) or 0.0)
 
+    # Quality-reject диагностика: pipeline отдаёт quality_reason/quality_details/
+    # quality_warning/quality_mode — без этого pass-through sync fast-path теряет
+    # причину отказа (verify_from_pipeline_result читает features["quality_details"]),
+    # и клиент получает status="quality_reject" с пустыми quality_details и reason=
+    # "quality_reject" (дефолт) — невозможно понять, какой именно чек упал
+    # (blur/brightness/face_too_small/…). Async-путь (verify_worker) их сохраняет —
+    # sync-путь должен быть ему симметричен.
+    if payload["status"] == "quality_reject":
+        qreason = result.get("quality_reason")
+        payload["quality_reason"] = qreason
+        payload["reason"] = qreason  # симметрично async-пути (verify_worker.reason)
+        payload["quality_details"] = result.get("quality_details", {}) or {}
+        payload["quality_warning"] = result.get("quality_warning")
+        payload["quality_mode"] = result.get("quality_mode")
+
     return _jsonable_pipeline_result(payload)
 
 
