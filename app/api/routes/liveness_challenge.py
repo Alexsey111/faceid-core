@@ -16,11 +16,10 @@ import time
 import uuid
 from datetime import datetime, timezone
 
-import cv2
-import numpy as np
 from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 
 from app.api.deps import require_auth
+from app.api._helpers import decode_image_bytes
 from app.core.config import settings
 from app.infrastructure.redis_client import redis_client
 from app.ml.liveness.challenge import (
@@ -61,12 +60,6 @@ def _get_ml() -> tuple:
 def _iso(ttl_s: int) -> str:
     from datetime import timedelta
     return (datetime.now(timezone.utc) + timedelta(seconds=ttl_s)).isoformat()
-
-
-def _decode_jpeg(blob: bytes) -> np.ndarray | None:
-    arr = np.frombuffer(blob, np.uint8)
-    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    return img
 
 
 @router.post("/init")
@@ -159,8 +152,10 @@ async def stream(
             while len(obs) < max_frames and time.monotonic() < deadline:
                 msg = await asyncio.wait_for(ws.receive(), timeout=5.0)
                 if msg.get("bytes"):
-                    img = _decode_jpeg(msg["bytes"])
-                    if img is None:
+                    try:
+                        img = decode_image_bytes(msg["bytes"])
+                    except ValueError:
+                        # невалидный кадр → пропускаем (стрим продолжается)
                         continue
                     ob = await asyncio.to_thread(
                         observe_frame, img, det, landmarker, passive, len(obs), t0

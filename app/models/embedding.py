@@ -1,7 +1,5 @@
 # embedding.py - Модель эмбеддинга
 
-import numpy as np
-
 from datetime import datetime
 from sqlalchemy import ForeignKey, DateTime, LargeBinary, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -56,8 +54,3 @@ class Embedding(Base):
         back_populates="embeddings",
         lazy="selectin"
     )
-
-    @property
-    def decrypted_vector(self) -> np.ndarray:
-        from app.core.crypto import decrypt_vector
-        return decrypt_vector(self.encrypted_embedding)

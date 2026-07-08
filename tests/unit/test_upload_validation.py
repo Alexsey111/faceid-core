@@ -82,6 +82,24 @@ async def test_enroll_ok_returns_embedding_id():
     assert res["embedding_id"] == 42
 
 
+def test_embedding_service_uses_pipeline_factory(monkeypatch):
+    """Регрессия бага 2026-07-07: embedding_service должен брать pipeline из
+    общего factory (V2 по умолчанию), а НЕ хардкодить FacePipeline (V1).
+    V1.process() не возвращает ключ 'status' → проверка status!='ok' всегда
+    падала с enroll_failed → /upload и /update-reference были сломаны в prod.
+    Тесты мокировали svc.pipeline после __init__, поэтому регресс не ловился.
+    Здесь проверяем сам __init__: pipeline должен прийти из get_pipeline()."""
+    import app.services.embedding_service as es
+    sentinel = MagicMock()
+    monkeypatch.setattr(es, "get_pipeline", lambda: sentinel)
+    repo = MagicMock()
+    svc = EmbeddingService(repo, user_repo=None)
+    assert svc.pipeline is sentinel, (
+        "embedding_service должен использовать get_pipeline() (V2 контракт), "
+        "а не хардкодить FacePipeline V1"
+    )
+
+
 # ---------- 2. /upload, /upload_base64: валидация размера и MIME ----------
 
 def _client_with_mock_deps(monkeypatch) -> TestClient:

@@ -1,7 +1,7 @@
 import numpy as np
 from pathlib import Path
 
-from app.ml.pipeline import FacePipeline
+from app.ml.pipeline_v2 import FacePipelineV2
 
 
 DATA_DIR = Path(__file__).parent / "data"
@@ -12,7 +12,7 @@ def cosine(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def test_same_person_similarity_high():
-    pipeline = FacePipeline()
+    pipeline = FacePipelineV2()
 
     img1 = (DATA_DIR / "person1.jpg").read_bytes()
     img2 = (DATA_DIR / "person1_2.jpg").read_bytes()
@@ -32,7 +32,7 @@ def test_same_person_similarity_high():
 
 
 def test_different_person_similarity_low():
-    pipeline = FacePipeline()
+    pipeline = FacePipelineV2()
 
     img1 = (DATA_DIR / "person1.jpg").read_bytes()
     img2 = (DATA_DIR / "person2.jpg").read_bytes()
@@ -52,7 +52,7 @@ def test_different_person_similarity_low():
 
 
 def test_embedding_is_normalized():
-    pipeline = FacePipeline()
+    pipeline = FacePipelineV2()
 
     img = (DATA_DIR / "person1.jpg").read_bytes()
     result = pipeline.process(img)

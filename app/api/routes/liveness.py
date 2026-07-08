@@ -1,22 +1,12 @@
 from fastapi import APIRouter, File, HTTPException, UploadFile
-import cv2
-import numpy as np
 
 from app.core.config import settings
 from app.ml.detection.retinaface_detector import RetinaFaceDetector
 from app.ml.liveness.scoring import score_image_liveness
 from app.ml.runtime import get_liveness_checker
+from app.api._helpers import decode_image_bytes
 
 router = APIRouter()
-
-
-def _decode(image_bytes: bytes) -> np.ndarray:
-    """Декодирует байты в BGR uint8 кадр (без resize — checker сам делает кроп)."""
-    nparr = np.frombuffer(image_bytes, np.uint8)
-    image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-    if image is None:
-        raise ValueError("Invalid image")
-    return image
 
 
 @router.post("/liveness")
@@ -29,7 +19,7 @@ async def check_liveness(file: UploadFile = File(...)):
             )
 
         image_bytes = await file.read()
-        image = _decode(image_bytes)
+        image = decode_image_bytes(image_bytes)
 
         checker = get_liveness_checker()
         if checker is None:

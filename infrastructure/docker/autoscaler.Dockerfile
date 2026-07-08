@@ -1,4 +1,4 @@
-# D:\python projects\faceid-core\infrastructure\docker\autoscaler.Dockerfile
+# autoscaler.Dockerfile — autoscaler (docker-ce-cli, управляет compose). См. docs/deploy-runbook.md.
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y \

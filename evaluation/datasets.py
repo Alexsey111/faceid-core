@@ -76,9 +76,3 @@ def dataset_stats(dataset: dict[str, list[Path]]) -> dict:
         "max_per_id": max(counts) if counts else 0,
         "n_single_image_ids": sum(1 for c in counts if c == 1),
     }
-
-
-def iter_id_images_typed(dataset: Iterable[tuple[str, Path]]) -> Iterator[tuple[str, Path]]:
-    """Совместимость: если передан уже плоский итерируемый (id, path) — пропускает."""
-    for id_, path in dataset:  # type: ignore[misc]
-        yield id_, path

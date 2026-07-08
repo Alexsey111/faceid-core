@@ -206,16 +206,12 @@ def verify_sync(request: VerifyRequest):
         result["wait_for_slot_ms"] = wait_for_slot_ms
         result["worker_total_ms"] = worker_total_ms
         normalized = _normalize_verify_sync_result(result)
-        # Webhook для fast-worker sync-пути (ТЗ 3.2). Fire-and-forget;
-        # notify_sync определит наличие loop и поставит задачу в очередь.
+        # Webhook для fast-worker sync-пути (ТЗ 3.2). Fire-and-forget; sanitize
+        # (биометрия выкидывается) — внутри fire_sync_webhook, единый источник
+        # с sync-роутами verify.py (раньше инлайн-дубль, риск рассинхрона sanitize).
         try:
-            from app.services.webhook_service import notify_sync as _webhook_notify_sync
-            from app.services.verify_result_store import VerifyResultStore
-            from uuid import uuid4
-            _webhook_notify_sync(
-                f"sync-{uuid4()}", "sync",
-                VerifyResultStore._sanitize_mapping(normalized),
-            )
+            from app.services.webhook_service import fire_sync_webhook
+            fire_sync_webhook(normalized)
         except Exception:
             logger.warning("webhook_dispatch_failed (verify_sync)", exc_info=True)
         return normalized

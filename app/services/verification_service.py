@@ -6,7 +6,6 @@ from typing import Dict, Any, Optional
 import numpy as np
 import time
 
-from app.ml.pipeline import FacePipeline
 from app.ml.pipeline_v2 import FacePipelineV2
 from app.core.config import settings
 from app.db.repositories.embedding_repo import EmbeddingRepository
@@ -34,7 +33,6 @@ try:
         DETECT_MS,
         ENCODE_MS,
         VECTOR_SEARCH_MS,
-        RESULT_WRITE_MS,
     )
     METRICS_ENABLED = True
 except Exception:
@@ -268,7 +266,7 @@ class VerificationService:
         if pipeline is not None:
             self.pipeline = pipeline
         elif load_pipeline:
-            self.pipeline = FacePipelineV2() if settings.USE_PIPELINE_V2 else FacePipeline()
+            self.pipeline = FacePipelineV2()
         else:
             self.pipeline = None
         self.search_service = search_service

@@ -39,14 +39,6 @@ def decrypt(data: bytes) -> bytes:
     return _decrypt(data)
 
 
-def encrypt_embedding_bytes(data: bytes) -> bytes:
-    return encrypt(data)
-
-
-def decrypt_embedding_bytes(token: bytes) -> bytes:
-    return decrypt(token)
-
-
 def encrypt_vector(vector) -> bytes:
     if isinstance(vector, (bytes, bytearray, memoryview)):
         return encrypt(bytes(vector))

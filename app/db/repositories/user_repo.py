@@ -28,11 +28,6 @@ class UserRepository:
         await self.db.refresh(user)
         return user
 
-    async def get_by_id(self, user_id: int) -> User | None:
-        query = select(User).where(User.id == user_id)
-        result = await timed_db_call(self.db.execute(query), "user_repo.get_by_id")
-        return result.scalar_one_or_none()
-
     async def get_by_external_id(self, external_id: str) -> User | None:
         query = select(User).where(User.external_id == external_id)
         result = await timed_db_call(self.db.execute(query), "user_repo.get_by_external_id")

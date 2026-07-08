@@ -11,12 +11,10 @@ from app.db.session import get_db
 from app.schemas.response import SuccessResponse
 from app.schemas.upload import UploadRequest
 from app.services.rate_limiter import RateLimiter
+from app.api._helpers import MAX_IMAGE_SIZE
 
 
 router = APIRouter()
-
-# Лимит размера изображения (consistency с /verify: app/api/routes/verify.py:54).
-MAX_IMAGE_SIZE = 5 * 1024 * 1024
 
 
 @router.post("/upload", response_model=SuccessResponse)

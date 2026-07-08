@@ -6,22 +6,20 @@ import binascii
 import json
 import logging
 import os
-import time
 import uuid
 from contextlib import contextmanager
 from enum import StrEnum
 from time import perf_counter
-from types import SimpleNamespace
 
 import cv2
 import numpy as np
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 
+from app.api._helpers import get_request_id
 from app.core.config import settings
 from app.core.timing import StageTimings, elapsed_ms, now_epoch_ns, now_perf_ns
 from app.infrastructure.minio_client import MinioClient
-from app.infrastructure.redis_client import redis_client
 from app.monitoring.metrics import (
     ERROR_COUNTER,
     inc_async_stage_failure,
@@ -33,9 +31,6 @@ from app.monitoring.metrics import (
     VERIFY_ADMISSION_QUEUE_LEN_SNAPSHOT,
     VERIFY_ADMISSION_REJECTED_TOTAL,
     VERIFY_ADMISSION_STAGE_MS,
-    QUEUE_LENGTH,
-    QUEUE_LENGTH_REDIS_SNAPSHOT,
-    REDIS_COMMAND_LATENCY_MS,
     VERIFY_ASYNC_ACCEPTED_TOTAL,
     VERIFY_ASYNC_BASE64_DECODE_MS,
     VERIFY_ASYNC_BODY_READ_MS,
@@ -124,27 +119,6 @@ def _fmt_header_int(value: int | None) -> str:
 
 def _fmt_header_float(value: float | None) -> str:
     return "" if value is None else f"{float(value):.3f}"
-
-
-def _get_request_id(request: Request) -> str:
-    state = getattr(request, "state", None)
-    if state is None:
-        state = SimpleNamespace()
-        try:
-            setattr(request, "state", state)
-        except Exception:
-            pass
-
-    request_id = getattr(state, "request_id", None)
-    if request_id:
-        return request_id
-
-    request_id = f"req-{int(time.time() * 1000)}"
-    try:
-        state.request_id = request_id
-    except Exception:
-        pass
-    return request_id
 
 
 class VerifyAsyncRequest(BaseModel):
@@ -263,7 +237,7 @@ async def verify_async(http_request: Request):
     accepted_at_ns = now_epoch_ns()
     started_total = perf_counter()
     route = VERIFY_ROUTE
-    request_id = _get_request_id(http_request)
+    request_id = get_request_id(http_request)
     job_id: str | None = None
     current_stage = "request_parse"
 
@@ -596,8 +570,3 @@ async def verify_async(http_request: Request):
         timings.set("route_total_ms", elapsed_ms(route_start_ns))
         _record_async_timings(timings)
         VERIFY_ASYNC_ROUTE_MS.observe((perf_counter() - started_total) * 1000)
-
-
-@router.post("/ping_async")
-async def ping():
-    return {"ok": True}

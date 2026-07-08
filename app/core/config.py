@@ -213,7 +213,6 @@ class Settings(BaseSettings):
     CHALLENGE_MARGIN_HIGH: float = 0.20
     RETINA_DET_SIZE: int = 512
     RETINA_DET_SIZE_SMALL: int = 320
-    USE_PIPELINE_V2: bool = True
     USE_SIMPLE_IS_GENUINE: bool = True
     USE_FAST_PATH: bool = True
     FAST_PATH_MAX_CONCURRENCY: int = 4

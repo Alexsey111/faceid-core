@@ -22,8 +22,6 @@ def current_active_requests() -> int:
 
 def get_system_load() -> float:
     try:
-        from app.monitoring.metrics import QUEUE_DELAY_MS  # noqa: F401
-
         raw_value = redis_client.get(QUEUE_DELAY_MS_KEY)
         return float(raw_value or 0.0)
     except Exception:

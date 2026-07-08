@@ -8,7 +8,6 @@ import json
 import logging
 import time
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any, Optional
 
 import httpx
@@ -17,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.repositories.verification_job_repo import VerificationJobRepository
 from app.core.config import settings
+from app.api._helpers import MAX_IMAGE_SIZE, get_request_id
 from app.db.session import get_db
 from app.infrastructure.minio_client import MinioClient
 from app.infrastructure.redis_client import redis_client
@@ -44,37 +44,13 @@ from app.services.verification_service_factory import (
     get_verification_service,
     get_verification_service_without_pipeline,
 )
-from app.services.verify_result_store import VerifyResultStore
-from app.services.webhook_service import notify_sync as _webhook_notify_sync
+from app.services.webhook_service import fire_sync_webhook
 from app.workers.tasks.verify_task import verify_task
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-MAX_IMAGE_SIZE = 5 * 1024 * 1024
 _fast_worker_client: httpx.AsyncClient | None = None
-
-
-def _fire_sync_webhook(result: Any) -> None:
-    """
-    Webhook для sync-верификации (ТЗ 3.2): синтетический job_id вида sync-<uuid>,
-    payload sanitised через VerifyResultStore._sanitize_mapping (выкинет
-    embedding/image и пр.). Fire-and-forget (API-loop длинкоживущий → очередь).
-    """
-    if not settings.WEBHOOK_ENABLED:
-        return
-    try:
-        from uuid import uuid4
-        if hasattr(result, "model_dump"):
-            data = result.model_dump()
-        elif isinstance(result, dict):
-            data = result
-        else:
-            return
-        payload = VerifyResultStore._sanitize_mapping(data)
-        _webhook_notify_sync(f"sync-{uuid4()}", "sync", payload)
-    except Exception:
-        logger.warning("webhook_dispatch_failed (sync)", exc_info=True)
 
 
 def _normalize_priority(value: str | None) -> tuple[str, int]:
@@ -140,27 +116,6 @@ def _apply_active_liveness(result: Any, active_proven: bool) -> Any:
 
 def _pick_fast_worker_url() -> str:
     return settings.FAST_WORKER_URL
-
-
-def _get_request_id(request: Request) -> str:
-    state = getattr(request, "state", None)
-    if state is None:
-        state = SimpleNamespace()
-        try:
-            setattr(request, "state", state)
-        except Exception:
-            pass
-
-    request_id = getattr(state, "request_id", None)
-    if request_id:
-        return request_id
-
-    request_id = f"req-{int(time.time() * 1000)}"
-    try:
-        state.request_id = request_id
-    except Exception:
-        pass
-    return request_id
 
 
 def get_fast_worker_client() -> httpx.AsyncClient:
@@ -298,7 +253,7 @@ async def verify_file(
         user_id=user_id,
     )
 
-    _fire_sync_webhook(result)
+    fire_sync_webhook(result)
 
     return result
 
@@ -357,7 +312,7 @@ async def verify_base64(
                         t_start=t_start,
                     )
                     result = _apply_active_liveness(result, active_proven)
-                    _fire_sync_webhook(result)
+                    fire_sync_webhook(result)
                     return result
                 except Exception as exc:
                     failures = record_fast_worker_failure()
@@ -375,7 +330,7 @@ async def verify_base64(
             get_fast_worker_failures(),
         )
 
-    job_id = _get_request_id(http_request)
+    job_id = get_request_id(http_request)
     request_received_time = time.time()
     safe_filename = "legacy.jpg"
     object_name = f"verify/{job_id}/{safe_filename}"
@@ -433,7 +388,7 @@ async def verify_async(
         if len(image_bytes) > MAX_IMAGE_SIZE:
             raise HTTPException(status_code=400, detail="Image too large")
 
-        job_id = _get_request_id(http_request)
+        job_id = get_request_id(http_request)
         request_received_time = time.time()
         safe_filename = Path(file.filename or "image.jpg").name
         object_name = f"verify/{job_id}/{safe_filename}"
@@ -512,7 +467,7 @@ async def verify_async_base64(
         if len(image_bytes) > MAX_IMAGE_SIZE:
             raise HTTPException(status_code=400, detail="Image too large")
 
-        job_id = _get_request_id(http_request)
+        job_id = get_request_id(http_request)
         request_received_time = time.time()
         object_name = f"verify/{job_id}/legacy.jpg"
 

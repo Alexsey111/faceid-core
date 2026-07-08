@@ -3,7 +3,7 @@ import pytest
 
 from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.db.repositories.verification_repo import VerificationRepository
-from app.ml.pipeline import FacePipeline
+from app.ml.pipeline_v2 import FacePipelineV2
 from app.services.verification_service import VerificationService
 
 
@@ -21,21 +21,21 @@ class DummyVerificationRepo(VerificationRepository):
 
 
 def test_empty_image_bytes():
-    pipeline = FacePipeline()
+    pipeline = FacePipelineV2()
 
     with pytest.raises(Exception):
         pipeline.process(b"")
 
 
 def test_invalid_image_bytes():
-    pipeline = FacePipeline()
+    pipeline = FacePipelineV2()
 
     with pytest.raises(Exception):
         pipeline.process(b"not_an_image")
 
 
 def test_no_face_detected():
-    pipeline = FacePipeline()
+    pipeline = FacePipelineV2()
     blank = np.zeros((112, 112, 3), dtype=np.uint8).tobytes()
 
     with pytest.raises(Exception):

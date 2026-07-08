@@ -53,7 +53,6 @@ async def re_enroll(source: Path, dry_run: bool, limit) -> None:
     print(f"DATABASE_URL: {settings.DATABASE_URL}")
     print(f"source: {source}  dry_run={dry_run}  limit={limit}")
     print(
-        f"USE_PIPELINE_V2={settings.USE_PIPELINE_V2} "
         f"POSE_QUALITY_MODE={settings.POSE_QUALITY_MODE} "
         f"FAISS_ENABLED={settings.FAISS_ENABLED}"
     )

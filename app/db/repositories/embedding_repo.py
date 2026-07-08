@@ -212,21 +212,6 @@ class EmbeddingRepository:
             grouped.append(self._topk_from_scores(scores[b], user_ids, k))
         return grouped
 
-    async def find_similar(
-        self,
-        embedding: np.ndarray,
-        k: int = 2,
-    ) -> list[dict]:
-        return await self.find_top_k(embedding, k=k)
-
-    async def get_by_user_id(self, user_id: int) -> list[Embedding]:
-        query = select(Embedding).where(Embedding.user_id == user_id)
-        result = await timed_db_call(self.db.execute(query), "embedding_repo.get_by_user_id")
-        return list(result.scalars().all())
-
-    async def get_by_user(self, user_id: int) -> list[Embedding]:
-        return await self.get_by_user_id(user_id)
-
     async def delete_by_user_id(self, user_id: int) -> int:
         query = select(Embedding).where(Embedding.user_id == user_id)
         result = await timed_db_call(self.db.execute(query), "embedding_repo.delete_by_user_id")

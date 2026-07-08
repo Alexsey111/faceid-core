@@ -229,3 +229,25 @@ async def _notify_async(job_id: str, state: str, payload: dict[str, Any]) -> Non
         await svc.notify(job_id, state, payload)
     except Exception:
         logger.exception("webhook_async_dispatch_failed job_id=%s", job_id)
+
+
+def fire_sync_webhook(result: Any) -> None:
+    """Webhook для sync-верификации (ТЗ 3.2): синтетический job_id sync-<uuid>,
+    payload sanitised через VerifyResultStore._sanitize_mapping (выкинет
+    embedding/image и пр.). Fire-and-forget. Guard WEBHOOK_ENABLED — внутри
+    notify_sync. Единый источник для /verify_sync (main.py) и sync-роутов
+    (verify.py) — раньше логика дублировалась, что рискованно для sanitize
+    (биометрия в webhook = нарушение 152-ФЗ при рассинхроне)."""
+    try:
+        from uuid import uuid4
+        from app.services.verify_result_store import VerifyResultStore
+        if hasattr(result, "model_dump"):
+            data = result.model_dump()
+        elif isinstance(result, dict):
+            data = result
+        else:
+            return
+        payload = VerifyResultStore._sanitize_mapping(data)
+        notify_sync(f"sync-{uuid4()}", "sync", payload)
+    except Exception:
+        logger.warning("webhook_dispatch_failed (sync)", exc_info=True)

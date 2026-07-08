@@ -17,8 +17,6 @@ from app.db.repositories.verification_job_repo import VerificationJobRepository
 from app.db.repositories.verification_repo import VerificationRepository
 from app.db.session import AsyncSessionLocal
 from app.core.config import settings
-from app.ml.pipeline import FacePipeline
-from app.ml.pipeline_v2 import FacePipelineV2
 from app.infrastructure.minio_client import MinioClient
 from app.infrastructure.redis_client import redis_client
 from app.models.verification_job import JobStatus
@@ -26,6 +24,7 @@ from app.services.backpressure import decrement_active
 from app.services.liveness_service import LivenessService
 from app.services.search_service import SearchService
 from app.services.verification_service import VerificationService
+from app.services.verification_service_factory import get_pipeline
 from app.services.webhook_service import notify_direct as _webhook_notify_direct
 from app.services.backpressure import QUEUE_DELAY_MS_KEY
 try:
@@ -60,21 +59,8 @@ from app.workers.celery_app import celery_app as app
 logger = logging.getLogger(__name__)
 worker_logger = logging.getLogger("worker")
 JOB_RESULT_TTL = 300
-_pipeline: FacePipeline | FacePipelineV2 | None = None
 _pipeline_warmed_up: bool = False
 _thread_local = threading.local()
-
-
-def get_pipeline() -> FacePipeline | FacePipelineV2:
-    global _pipeline
-    if _pipeline is None:
-        print(f"USE_PIPELINE_V2={settings.USE_PIPELINE_V2}", flush=True)
-        if settings.USE_PIPELINE_V2:
-            _pipeline = FacePipelineV2()
-        else:
-            _pipeline = FacePipeline()
-        print(f"Using pipeline: {type(_pipeline).__name__}", flush=True)
-    return _pipeline
 
 
 def _make_dummy_image_bytes() -> bytes:

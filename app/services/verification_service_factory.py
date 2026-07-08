@@ -4,13 +4,11 @@ from typing import Any, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.ml.pipeline import FacePipeline
 from app.ml.pipeline_v2 import FacePipelineV2
 from app.services.verification_service import VerificationService
 from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.db.repositories.verification_repo import VerificationRepository
 from app.services.search_service import SearchService
-from app.core.config import settings
 
 
 
@@ -24,8 +22,7 @@ _pipeline: PipelineProtocol | None = None
 def get_pipeline() -> PipelineProtocol:
     global _pipeline
     if _pipeline is None:
-        print(f"USE_PIPELINE_V2={settings.USE_PIPELINE_V2}", flush=True)
-        _pipeline = FacePipelineV2() if settings.USE_PIPELINE_V2 else FacePipeline()
+        _pipeline = FacePipelineV2()
         print(f"Using pipeline: {type(_pipeline).__name__}", flush=True)
     return _pipeline
 

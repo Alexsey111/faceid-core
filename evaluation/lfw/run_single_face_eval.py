@@ -35,6 +35,7 @@ from evaluation.lfw.run_lfw import (  # noqa: E402
     cache_path,
     parse_pairs,
     _model_slug,
+    _model_sha256,
 )
 from evaluation.metrics import (  # noqa: E402
     auc_from_roc,
@@ -45,15 +46,6 @@ from evaluation.metrics import (  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("lfw.single_face")
-
-
-def _model_sha256(path: Path) -> str:
-    import hashlib
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def counts_cache_path(cache_dir: str, slug: str, det_size: int) -> Path:

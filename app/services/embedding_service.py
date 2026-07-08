@@ -3,7 +3,8 @@
 from typing import Dict, Any, Optional
 
 import numpy as np
-from app.ml.pipeline import FacePipeline
+from app.core.vector import l2_normalize
+from app.services.verification_service_factory import get_pipeline
 from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.db.repositories.user_repo import UserRepository
 from app.services.search_service import SearchService
@@ -14,7 +15,11 @@ class EmbeddingService:
 
     def __init__(self, embedding_repo: EmbeddingRepository, user_repo: Optional[UserRepository] = None):
 
-        self.pipeline = FacePipeline()
+        # Pipeline — через общий factory (FacePipelineV2, единый синглтон с
+        # verification_service). Раньше хардкодился FacePipeline (V1, удалён),
+        # чей process() НЕ возвращал "status" → проверка status!="ok" всегда
+        # падала с enroll_failed → /upload и /update-reference были сломаны.
+        self.pipeline = get_pipeline()
         self.embedding_repo = embedding_repo
         self.user_repo = user_repo
         self.search_service = SearchService(embedding_repo)
@@ -44,8 +49,9 @@ class EmbeddingService:
             raise ValueError(f"enroll_failed: {reason}")
 
         embedding: np.ndarray = result["embedding"]
-        # normalize embedding
-        embedding = embedding / np.linalg.norm(embedding)
+        # normalize embedding (защитно — энкодер уже нормирует, но инвариант
+        # может быть нарушен; единая l2_normalize из app.core.vector)
+        embedding = l2_normalize(embedding)
         embedding = embedding.tolist()
 
         # Replace-семантика: один эталон на пользователя. Перед create удаляем

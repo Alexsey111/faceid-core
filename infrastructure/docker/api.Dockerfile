@@ -1,4 +1,4 @@
-# D:\python projects\faceid-core\infrastructure\docker\api.Dockerfile
+# api.Dockerfile — API-образ (CPU). См. docs/deploy-runbook.md.
 FROM python:3.11-slim
 
 # Установка системных зависимостей

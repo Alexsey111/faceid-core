@@ -1,4 +1,4 @@
-# D:\python projects\faceid-core\infrastructure\docker\worker.Dockerfile
+# worker.Dockerfile — Celery worker (CPU). См. docs/deploy-runbook.md.
 FROM python:3.11-slim
 
 WORKDIR /app

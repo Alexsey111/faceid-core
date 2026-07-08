@@ -1,4 +1,5 @@
-#D:\python projects\faceid-core\infrastructure\docker-compose.yml
+# docker-compose.yml — FaceID Core stack (CPU). GPU-override: docker-compose.gpu.yml.
+# См. docs/deploy-runbook.md.
 
 x-worker-base: &worker-base
   build:
