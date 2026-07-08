@@ -86,6 +86,9 @@ TERMINAL_JOB_STATUSES = {"done", "error", "expired", "failed"}
 
 # Куда пишем traceback при падении (лог из окна не копируется — файл можно прислать).
 _CRASH_LOG = REPO_ROOT / "demo" / "_demo_crash.log"
+# Дубликат лог-зоны окна в файл (лог из окна не копируется — файл можно прислать).
+# Только человекочитаемые строки (status/score/reason), без кадров/эмбеддингов (152-ФЗ).
+_UI_LOG = REPO_ROOT / "demo" / "_demo_ui.log"
 
 
 def _write_crash(exc_type: Any, exc: Any, tb: Any) -> None:
@@ -712,6 +715,12 @@ class DesktopDemoApp(tk.Tk):
         self.log.insert("end", text + "\n")
         self.log.see("end")
         self.log.configure(state="disabled")
+        # Дублируем в файл (диагностика: лог из окна не копируется).
+        try:
+            with open(_UI_LOG, "a", encoding="utf-8") as f:
+                f.write(text + "\n")
+        except OSError:
+            pass
 
     # ------------------------------ сервис ---------------------------------
 
@@ -843,7 +852,8 @@ class DesktopDemoApp(tk.Tk):
         data = payload.get("data") or {}
         eid = data.get("embedding_id")
         self.ref_status.configure(text=f"эталон сохранён (embedding_id={eid})", foreground="#3ec47e")
-        self._append_log(f"[эталон] OK, embedding_id={eid}")
+        # Полный дамп ответа upload (метаданные, без биометрии) — для диагностики no_match.
+        self._append_log(f"[эталон] OK, embedding_id={eid}, full={data}")
 
     # ------------------------------ верификация ----------------------------
 
@@ -905,9 +915,21 @@ class DesktopDemoApp(tk.Tk):
         status = str(payload.get("status") or "processing_failed")
         score = payload.get("match_score") or payload.get("similarity")
         confidence = payload.get("confidence")
+        # Полный дамп результата в лог-файл (только метаданные — 152-ФЗ, без кадров/эмбеддингов).
+        # Нужно для диагностики «ни одну верификацию не прошёл»: статус/оценка/живость/причина.
+        indicators = payload.get("spoofing_indicators") or {}
+        qd = payload.get("quality_details")
+        self._append_log(
+            "[verify] результат: "
+            f"status={status} match_score={score} confidence={confidence} "
+            f"liveness_passed={payload.get('liveness_passed')} "
+            f"liveness_score={payload.get('liveness_score')} "
+            f"reason={payload.get('reason')} error_code={payload.get('error_code')} "
+            f"challenge_recommended={payload.get('challenge_recommended')} "
+            f"spoofing={indicators} quality={qd}"
+        )
         self._set_badge(status, self._status_text(status, score, confidence))
         self._set_bar(self.score_bar, score)
-        indicators = payload.get("spoofing_indicators") or {}
         self._set_bar(self.real_bar, indicators.get("real_prob"))
         self._set_bar(self.spoof_bar, indicators.get("spoof_prob"))
         self._render_detail(payload)
