@@ -210,10 +210,12 @@ challenge, `4503` liveness отключён/сервер занят, `1006` ра
 2. Превью камеры живёт сразу (камера стартует до сервиса — превью не зависит от API).
 3. **Эталон**: «Снять с камеры» или «Из файла…» → `POST /upload_base64` →
    `embedding_id`.
-4. **«Верифицировать (камера)»** — сама снимает кадр → `POST /verify_base64`
-   (sync fast-path, при `pending` — long-poll `/jobs/{id}/wait`). Чекбокс
-   «требовать liveness (passive)» по умолчанию **вкл** (нагляднее: ответ несёт
-   `liveness_passed`/`liveness_score`).
+4. **«Верифицировать (камера)»** — сама снимает кадр → `POST /verify_base64`.
+   В demo-override `USE_FAST_PATH=false` — запрос идёт через async-очередь
+   `face_verify_queue` (тот же worker, что и новые async-роуты), ответ `pending` →
+   long-poll `/jobs/{id}/wait?timeout=2000` до терминала. Это убирает «зависание на
+   pending», бывшее при отключённом Celery. Чекбокс «требовать liveness (passive)»
+   по умолчанию **вкл** (нагляднее: ответ несёт `liveness_passed`/`liveness_score`).
 5. **«Остановить сервис»** — `docker compose ... down -v` (чистит volumes с
    биометрией, 152-ФЗ). То же автоматически при закрытии окна.
 
@@ -261,6 +263,16 @@ challenge, `4503` liveness отключён/сервер занят, `1006` ра
 - `opencv-python` (не headless) — нужен `VideoCapture` к физической камере;
   вынесен в `demo/requirements-demo.txt`, отдельно от основного `requirements.txt`
   (демо-зависимости не нужны прод-сервису).
-- Async-fallback verify: при `{job_id, status:"pending"}` приложение long-poll'ит
+- Verify-путь (demo): `USE_FAST_PATH=false` → `verify_base64` ставит job в
+  `face_verify_queue` и возвращает `pending`; приложение long-poll'ит
   `/jobs/{id}/wait?timeout=2000` до терминала (`done`/`error`/`expired`/`failed`),
-  max 30с.
+  max 30с. Это основной путь в демо (не fallback): Celery-роуты в demo-override
+  отключены, а `face_verify_queue` потребляется одним worker-контейнером.
+- **Диагностика**: стадии лаунчера пишутся в `demo/_demo_launcher.log`
+  (`=== launcher start ===` → `[1/4] Python` → `[2/4]` → `[3/4] Dependencies OK`
+  → `[4/4] Docker OK` → `[launcher] starting desktop_demo.py` → `rc=…`), а
+  бизнес-логика (upload/verify/challenge) — в `demo/_demo_ui.log` (только
+  человекочитаемые метаданные: status/score/reason, без кадров/эмбеддингов/base64,
+  152-ФЗ). При «окно закрылось мгновенно / падает сразу» достаточно прислать
+  `_demo_launcher.log`; при сбое внутри приложения — `_demo_ui.log` и
+  `_demo_stdout.log` (traceback desktop_demo.py). Все `*.log` в `demo/` gitignored.
