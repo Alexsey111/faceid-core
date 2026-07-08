@@ -55,7 +55,7 @@ async def test_enroll_and_verify():
         print("\n📝 Enroll...")
         img_bytes.seek(0)
         enroll = await client.post(
-            "/upload?user_id=1",
+            "/api/v1/upload?user_id=1",
             files={"file": ("person1.jpg", img_bytes, "image/jpeg")}
         )
         
@@ -67,7 +67,7 @@ async def test_enroll_and_verify():
         print("\n🔐 Verify...")
         img_bytes.seek(0)
         verify = await client.post(
-            "/verify?user_id=1",
+            "/api/v1/verify?user_id=1",
             files={"file": ("person1.jpg", img_bytes, "image/jpeg")}
         )
         

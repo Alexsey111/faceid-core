@@ -35,7 +35,21 @@ def _make_image_b64() -> str:
 def test_verify_async_completion_includes_timings_and_timestamps(monkeypatch):
     fake_redis = FakeRedis()
     monkeypatch.setattr(verify_result_store, "redis_client", fake_redis)
-    monkeypatch.setattr(verify_async_route.redis_client, "llen", lambda *_: 0)
+
+    # Admission раньше читал длину очереди через модульный redis_client.llen;
+    # теперь — VerifyJobQueue.evaluate_admission() (возвращает AdmissionDecision).
+    # Мокаем принять заявку без обращения к реальному Redis.
+    async def _fake_evaluate_admission():
+        return SimpleNamespace(
+            accepted=True,
+            reason="accepted",
+            queue_len=0,
+            inflight=0,
+            estimated_delay_ms=0.0,
+        )
+    monkeypatch.setattr(
+        verify_async_route.VerifyJobQueue, "evaluate_admission", _fake_evaluate_admission
+    )
 
     # MinIO mock: route загружает фото в MinIO перед enqueue (п.4 — plaintext
     # base64 не кладётся в Redis-очередь). Реального MinIO в тесте нет.
@@ -51,7 +65,7 @@ def test_verify_async_completion_includes_timings_and_timestamps(monkeypatch):
 
     monkeypatch.setattr(verify_async_route, "MinioClient", _FakeMinio)
 
-    async def fake_enqueue_job(payload: dict[str, object]) -> str:
+    async def fake_enqueue_job(payload: dict[str, object], admission=None) -> str:
         job_id = "job-test-1"
         VerifyResultStore.set_done(
             job_id,
@@ -88,8 +102,10 @@ def test_verify_async_completion_includes_timings_and_timestamps(monkeypatch):
     app.include_router(job_status_route.router)
 
     client = TestClient(app)
+    # Роутеры смонтированы без /api/v1 prefix (тест зеркалит только admission-
+    # тайминги, не production-монтаж). GET /jobs/{id}/wait — тоже без prefix.
     response = client.post(
-        "/api/v1/verify_async",
+        "/verify_async",
         json={
             "image_b64": _make_image_b64(),
             "user_id": "42",

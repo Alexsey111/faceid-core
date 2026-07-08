@@ -9,10 +9,6 @@ from app.services.search_service import SearchService
 # Path to test image
 TEST_IMAGE = Path(__file__).parent / "images" / "person1.jpg"
 
-# Fallback to insightface test images (t1.jpg has 6 faces)
-if not TEST_IMAGE.exists():
-    TEST_IMAGE = Path("D:/python projects/faceid-core/venv/insightface/data/images/t1.jpg")
-
 
 @pytest.mark.asyncio
 async def test_enroll_and_verify():
@@ -26,7 +22,7 @@ async def test_enroll_and_verify():
         with open(TEST_IMAGE, "rb") as f:
 
             enroll = await ac.post(
-                "/upload?user_id=1",
+                "/api/v1/upload?user_id=1",
                 files={"file": (TEST_IMAGE.name, f, "image/jpeg")}
             )
 

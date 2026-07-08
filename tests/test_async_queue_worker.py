@@ -149,11 +149,27 @@ async def test_verify_result_store_set_and_get(monkeypatch):
 
     assert done_key == "job:job-1"
     assert done_ttl == verify_result_store.VerifyResultStore.TTL
-    assert json.loads(done_payload) == {"status": "done", "result": {"status": "ok"}}
+    # Envelope (_build_envelope): status + result + timings + timestamps.
+    # Раньше формат был плоским {status,result} — теперь добавлены timings/
+    # timestamps (пустые для result без этих полей).
+    assert json.loads(done_payload) == {
+        "status": "done",
+        "result": {"status": "ok"},
+        "timings": {},
+        "timestamps": {},
+    }
 
     assert error_key == "job:job-2"
     assert error_ttl == verify_result_store.VerifyResultStore.TTL
-    assert json.loads(error_payload) == {"status": "error", "error": "boom"}
+    # "error" входит в _SENSITIVE_KEYS → _sanitize_mapping выкидывает его из
+    # result (детали ошибки не утекают в envelope — security). result пустой,
+    # клиент видит только status="error".
+    assert json.loads(error_payload) == {
+        "status": "error",
+        "result": {},
+        "timings": {},
+        "timestamps": {},
+    }
 
     fake_redis.get_values["job:job-3"] = json.dumps({"status": "done", "result": {"x": 1}}).encode("utf-8")
     assert verify_result_store.VerifyResultStore.get("job-3") == {

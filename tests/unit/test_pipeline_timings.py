@@ -33,7 +33,13 @@ def test_pipeline_always_returns_canonical_timings(monkeypatch):
         ),
     )
     pipeline.fast_detector = SimpleNamespace(
-        detect=lambda _: [[0.0, 0.0, 180.0, 180.0, 0.99]],
+        # RetinaFace-контракт: list-of-dicts с bbox/confidence/landmarks
+        # (pipeline_v2._prepare_face_from_detection читает face["bbox"] и др.).
+        # Раньше мок возвращал list-of-lists [[x,y,x,y,conf]] — старый
+        # FastFaceDetector-контракт, удалён вместе с V1.
+        detect=lambda _: [
+            {"bbox": [0.0, 0.0, 180.0, 180.0], "confidence": 0.99, "landmarks": None},
+        ],
     )
     pipeline.encoder = SimpleNamespace(
         encode_batch=lambda _: [np.asarray([1.0, 0.5, 0.25], dtype=np.float32)],

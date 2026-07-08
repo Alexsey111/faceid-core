@@ -78,6 +78,26 @@ def reset_redis(request):
     yield
 
 
+@pytest.fixture(autouse=True)
+def disable_quality_gate_nonunit(request):
+    """E2E/integration-тесты проверяют бизнес-логику (match/no_match), а не
+    quality-gate. Тестовые фото (tests/data, tests/images) — мелкие кропы, на
+    которых V2 quality-gate режет по face_too_small → 400 quality_reject.
+    Отключаем gate для non-unit (unit-тесты качества живут в
+    test_upload_validation/test_pipeline_* и gate-логику тестируют сами).
+    Выставляем ДО первого pipeline.process() — pipeline читает
+    settings.QUALITY_GATE_MODE в _init (lazy)."""
+    if request.node.get_closest_marker("unit") is not None:
+        yield
+        return
+    prev = settings.QUALITY_GATE_MODE
+    settings.QUALITY_GATE_MODE = "off"
+    try:
+        yield
+    finally:
+        settings.QUALITY_GATE_MODE = prev
+
+
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def setup_database(run_migrations):
     yield

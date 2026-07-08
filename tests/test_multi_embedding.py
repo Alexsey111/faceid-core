@@ -8,12 +8,6 @@ from app.main import app
 TEST_IMAGE_1 = Path(__file__).parent / "images" / "person1.jpg"
 TEST_IMAGE_2 = Path(__file__).parent / "images" / "person2.jpg"
 
-# Fallback to insightface test images
-if not TEST_IMAGE_1.exists():
-    TEST_IMAGE_1 = Path("D:/python projects/faceid-core/venv/insightface/data/images/t1.jpg")
-if not TEST_IMAGE_2.exists():
-    TEST_IMAGE_2 = Path("D:/python projects/faceid-core/venv/insightface/data/images/t1.jpg")
-
 
 @pytest.mark.asyncio
 async def test_upload_replace_same_user():
@@ -32,7 +26,7 @@ async def test_upload_replace_same_user():
         # Enroll first photo
         with open(TEST_IMAGE_1, "rb") as f:
             enroll1 = await ac.post(
-                "/upload?user_id=1",
+                "/api/v1/upload?user_id=1",
                 files={"file": (TEST_IMAGE_1.name, f, "image/jpeg")}
             )
 
@@ -42,7 +36,7 @@ async def test_upload_replace_same_user():
         # Enroll second photo (same user)
         with open(TEST_IMAGE_2, "rb") as f:
             enroll2 = await ac.post(
-                "/upload?user_id=1",
+                "/api/v1/upload?user_id=1",
                 files={"file": (TEST_IMAGE_2.name, f, "image/jpeg")}
             )
 
@@ -52,7 +46,7 @@ async def test_upload_replace_same_user():
         # Verify first photo
         with open(TEST_IMAGE_1, "rb") as f:
             verify1 = await ac.post(
-                "/verify?user_id=1",
+                "/api/v1/verify?user_id=1",
                 files={"file": (TEST_IMAGE_1.name, f, "image/jpeg")}
             )
 
@@ -63,7 +57,7 @@ async def test_upload_replace_same_user():
         # Verify second photo
         with open(TEST_IMAGE_2, "rb") as f:
             verify2 = await ac.post(
-                "/verify?user_id=1",
+                "/api/v1/verify?user_id=1",
                 files={"file": (TEST_IMAGE_2.name, f, "image/jpeg")}
             )
 
