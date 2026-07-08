@@ -695,8 +695,7 @@ class DesktopDemoApp(tk.Tk):
         elif kind == M_CHALLENGE_INIT_OK:
             self._on_challenge_init_ok(payload)
         elif kind == M_CHALLENGE_INIT_ERR:
-            self._busy = False
-            self._set_actions_state()
+            self._release_busy()
             self.ch_status.configure(text=f"ошибка: {payload}", foreground="#e2554a")
             self._append_log(f"[challenge] init fail: {payload}")
         elif kind == M_CHALLENGE_MSG:
@@ -820,7 +819,7 @@ class DesktopDemoApp(tk.Tk):
             return
         user_id = self._numeric_user_id()
         if user_id is None:
-            self._busy = False
+            self._release_busy()
             return
         self.ref_status.configure(text="загружаю…", foreground="#e0a93a")
         self._append_log(f"[эталон] upload user_id={user_id}…")
@@ -829,14 +828,14 @@ class DesktopDemoApp(tk.Tk):
             try:
                 resp = self.api.upload_base64(user_id, image_b64 or "")
                 self.msg_q.put((M_UPLOAD, resp))
-            except (ApiError, requests.RequestException) as exc:
-                self.msg_q.put((M_UPLOAD, {"error": str(exc)}))
+            except Exception as exc:  # любой сбой → UI получает error, busy не залипает
+                _write_crash(type(exc), exc, exc.__traceback__)
+                self.msg_q.put((M_UPLOAD, {"error": repr(exc)}))
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _render_upload(self, payload: dict[str, Any]) -> None:
-        self._busy = False
-        self._set_actions_state()
+        self._release_busy()
         if "error" in payload:
             self.ref_status.configure(text=f"ошибка: {payload['error']}", foreground="#e2554a")
             self._append_log(f"[эталон] ОШИБКА: {payload['error']}")
@@ -853,12 +852,12 @@ class DesktopDemoApp(tk.Tk):
             return
         user_id = self._numeric_user_id()
         if user_id is None:
-            self._busy = False
+            self._release_busy()
             return
         if from_cam:
             b64 = self.camera.grab_jpeg_b64()
             if b64 is None:
-                self._busy = False
+                self._release_busy()
                 self._append_log("[verify] камера не готова")
                 return
         else:
@@ -867,17 +866,20 @@ class DesktopDemoApp(tk.Tk):
                 filetypes=[("Изображения", "*.jpg *.jpeg *.png *.bmp")],
             )
             if not path:
-                self._busy = False
+                self._release_busy()
                 return
             frame = read_image_file(path)
             if frame is None:
-                self._busy = False
+                self._release_busy()
                 self._append_log("[verify] не удалось прочитать файл")
                 return
             b64 = b64_jpeg(frame)
         self.verify_btn.configure(text="Верифицировать (камера)")
         self._set_overlay("", "#000000")
-        self._append_log(f"[verify] {user_id} (require_liveness={self.req_live_var.get()})…")
+        self._append_log(
+            f"[verify] {user_id} (require_liveness={self.req_live_var.get()}) — "
+            f"обработка, подождите (до ~30с на CPU)…"
+        )
 
         require_liveness = self.req_live_var.get()
 
@@ -888,14 +890,14 @@ class DesktopDemoApp(tk.Tk):
                     require_liveness=require_liveness, liveness_mode="passive",
                 )
                 self.msg_q.put((M_VERIFY, resp))
-            except (ApiError, requests.RequestException) as exc:
-                self.msg_q.put((M_VERIFY, {"error": str(exc)}))
+            except Exception as exc:  # любой сбой → UI получает error, busy не залипает
+                _write_crash(type(exc), exc, exc.__traceback__)
+                self.msg_q.put((M_VERIFY, {"error": repr(exc)}))
 
         threading.Thread(target=worker, daemon=True).start()
 
     def _render_verify(self, payload: dict[str, Any]) -> None:
-        self._busy = False
-        self._set_actions_state()
+        self._release_busy()
         if "error" in payload:
             self._set_badge("error", f"ошибка: {payload['error']}")
             self._append_log(f"[verify] ОШИБКА: {payload['error']}")
@@ -997,8 +999,9 @@ class DesktopDemoApp(tk.Tk):
             try:
                 init = self.api.challenge_init()
                 self.msg_q.put((M_CHALLENGE_INIT_OK, init))
-            except (ApiError, requests.RequestException) as exc:
-                self.msg_q.put((M_CHALLENGE_INIT_ERR, str(exc)))
+            except Exception as exc:  # любой сбой → UI получает error, busy не залипает
+                _write_crash(type(exc), exc, exc.__traceback__)
+                self.msg_q.put((M_CHALLENGE_INIT_ERR, repr(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1042,8 +1045,7 @@ class DesktopDemoApp(tk.Tk):
         self.btn_ch_cancel.configure(state="disabled")
         self.ch_status.configure(text="отменено", foreground="#aaaaaa")
         self._set_overlay("", "#000000")
-        self._busy = False
-        self._set_actions_state()
+        self._release_busy()
         self._append_log("[challenge] отменено пользователем")
 
     def _on_challenge_result_main(self, msg: dict[str, Any]) -> None:
@@ -1063,8 +1065,7 @@ class DesktopDemoApp(tk.Tk):
             self.ch_status.configure(text=f"не пройден: {reason}", foreground="#e2554a")
             self._set_overlay("Challenge не пройден — повторите", "#e2554a")
             self._append_log(f"[challenge] FAIL is_live=False reason={reason}")
-            self._busy = False
-            self._set_actions_state()
+            self._release_busy()
 
     def _on_challenge_closed_main(self, payload: tuple) -> None:
         # Аварийный разрыв WS БЕЗ вердикта (expired/bad token/конфликт). Если
@@ -1079,8 +1080,7 @@ class DesktopDemoApp(tk.Tk):
         self.ch_status.configure(text=ws_close_reason(code), foreground="#e2554a")
         self._set_overlay(ws_close_reason(code), "#e2554a")
         self._append_log(f"[challenge] закрыто: {ws_close_reason(code)} ({reason})")
-        self._busy = False
-        self._set_actions_state()
+        self._release_busy()
 
     def _auto_verify_active(self, token: str) -> None:
         """Авто-переход: verify_base64 с liveness_mode=active + токен. Токен single-use,
@@ -1089,8 +1089,7 @@ class DesktopDemoApp(tk.Tk):
         user_id = self._numeric_user_id()
         b64 = self.camera.grab_jpeg_b64()
         if user_id is None or not b64:
-            self._busy = False
-            self._set_actions_state()
+            self._release_busy()
             self._append_log("[challenge] нет user_id/кадра для авто-verify")
             return
 
@@ -1101,8 +1100,9 @@ class DesktopDemoApp(tk.Tk):
                     liveness_mode="active", liveness_token=token,
                 )
                 self.msg_q.put((M_VERIFY, resp))
-            except (ApiError, requests.RequestException) as exc:
-                self.msg_q.put((M_VERIFY, {"error": str(exc)}))
+            except Exception as exc:  # любой сбой → UI получает error, busy не залипает
+                _write_crash(type(exc), exc, exc.__traceback__)
+                self.msg_q.put((M_VERIFY, {"error": repr(exc)}))
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -1133,6 +1133,13 @@ class DesktopDemoApp(tk.Tk):
         self.busy = True
         self._set_actions_state()
         return True
+
+    def _release_busy(self) -> None:
+        """Сброс busy + обновление состояния кнопок. Единая точка: гарантирует, что
+        после ЛЮБОГО завершения операции (успех/ошибка/отмена/ранний return) кнопки
+        снова активны — не бывает залипшего disabled."""
+        self.busy = False
+        self._set_actions_state()
 
     def _set_actions_state(self) -> None:
         ready = self.service_ready and not self.busy

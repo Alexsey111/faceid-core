@@ -9,13 +9,14 @@ echo.
 
 REM --- 1. Detect Python: prefer one that ALREADY has deps (filters Store stub) ---
 REM A Microsoft Store stub without a real install has no cv2 -> import fails ->
-REM we fall through to py launcher. Prefer python (PATH) then py -3.11 then py -3.
+REM we fall through. Prefer py launcher (system-wide, not a Store stub) over
+REM python (PATH), targeting 3.11 where the user's demo deps already live.
 set "PY="
-python -c "import cv2,requests,websocket,PIL" >nul 2>nul
-if not errorlevel 1 set "PY=python"
+py -3.11 -c "import cv2,requests,websocket,PIL" >nul 2>nul
+if not errorlevel 1 set "PY=py -3.11"
 if not defined PY (
-    py -3.11 -c "import cv2,requests,websocket,PIL" >nul 2>nul
-    if not errorlevel 1 set "PY=py -3.11"
+    python -c "import cv2,requests,websocket,PIL" >nul 2>nul
+    if not errorlevel 1 set "PY=python"
 )
 if not defined PY (
     py -3 -c "import cv2,requests,websocket,PIL" >nul 2>nul
@@ -23,6 +24,10 @@ if not defined PY (
 )
 if not defined PY (
     REM none has deps yet; pick any available interpreter, we will pip-install below
+    py -3.11 --version >nul 2>nul
+    if not errorlevel 1 set "PY=py -3.11"
+)
+if not defined PY (
     python --version >nul 2>nul
     if not errorlevel 1 set "PY=python"
 )
