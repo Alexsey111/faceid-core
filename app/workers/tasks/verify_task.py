@@ -340,6 +340,19 @@ async def _process_verify_job(
                 "worker_job_finished",
                 extra={"job_id": job_id, "status": result.get("status")},
             )
+
+            # 152-ФЗ: исходное фото удаляется из MinIO и при spoof-детекции.
+            # Раньше spoof-ветка возвращалась ДО delete_image (стр.464 ниже) →
+            # фото спуфера оставалось в хранилище навсегда (compliance-баг).
+            try:
+                minio_client.delete_image(image_url)
+            except Exception:
+                MINIO_DELETE_FAIL_TOTAL.labels(stage="verify_task_spoof").inc()
+                logger.warning(
+                    "minio_delete_failed job_id=%s image_url=%s: %s",
+                    job_id, image_url, exc_info=True,
+                )
+
             return result
 
         # optional liveness gate before search/decision
@@ -353,6 +366,11 @@ async def _process_verify_job(
         log_success = False
         log_margin: float | None = None
         log_is_genuine: bool | None = None
+        # search_time определяется только в else-ветке (search). В
+        # liveness-gate-fail-ветке (require_liveness + не passed) поиска нет,
+        # но logger.warning ниже использует float(search_time) всегда →
+        # раньше был UnboundLocalError и worker падал при passive-spoof-fail.
+        search_time = 0.0
 
         if require_liveness and not liveness_passed:
             if METRICS_ENABLED:
