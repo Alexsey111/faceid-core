@@ -67,10 +67,14 @@
 
       <!-- Таб Эталон -->
       <div class="tab-panel" data-panel="upload">
-        <p class="muted small">POST /api/v1/upload_base64 — записать эталон по кадру с камеры.</p>
+        <p class="muted small">POST /api/v1/upload_base64 — записать эталон с камеры или файла с ПК.</p>
         <div class="actions">
-          <button id="upload-run" class="btn btn-accent">Загрузить эталон</button>
+          <button id="upload-run" class="btn btn-accent">Загрузить эталон (камера)</button>
+          <label id="upload-file-btn" class="btn" for="upload-file">Загрузить с ПК…</label>
+          <input id="upload-file" type="file" accept="image/*" hidden />
+          <span id="upload-file-name" class="muted small"></span>
         </div>
+        <p class="muted small">Файл с ПК читается только в памяти браузера и уходит как base64 (152-ФЗ: исходник на сервере не хранится).</p>
         <div id="upload-result" class="result"></div>
       </div>
 
@@ -117,6 +121,6 @@
     </section>
   </main>
 
-  <script src="app.js" defer></script>
+  <script src="app.js?v=3" defer></script>
 </body>
 </html>

@@ -294,6 +294,53 @@ async function doUpload() {
   }
 }
 
+// Читает выбранный файл с ПК в чистый base64 (без data:-prefix) для /upload_base64.
+// Возвращает { base64, contentType, name, size }. Валидирует тип/размер на клиенте
+// (сервер тоже валидирует — это лишь быстрый фолбэк без круглого пути).
+const MAX_UPLOAD_FILE_BYTES = 5 * 1024 * 1024; // 5 MiB — соответствует MAX_IMAGE_SIZE на сервере.
+
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return reject(new Error("Файл не выбран."));
+    if (!file.type || !file.type.startsWith("image/"))
+      return reject(new Error("Выберите файл-изображение (JPEG/PNG)."));
+    if (file.size > MAX_UPLOAD_FILE_BYTES)
+      return reject(new Error(`Файл слишком большой (${(file.size / 1024 / 1024).toFixed(1)} MiB > 5 MiB).`));
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataUrl = String(reader.result || "");
+      const comma = dataUrl.indexOf(",");
+      if (comma < 0) return reject(new Error("Не удалось прочитать файл."));
+      resolve({
+        base64: dataUrl.slice(comma + 1),
+        contentType: file.type,
+        name: file.name,
+        size: file.size,
+      });
+    };
+    reader.onerror = () => reject(new Error("Ошибка чтения файла."));
+    reader.readAsDataURL(file);
+  });
+}
+
+// Загрузка эталона из файла с ПК (вместо кадра с камеры). Тот же /upload_base64.
+async function doUploadFromFile(file) {
+  const el = $("#upload-result");
+  el.innerHTML = `<p class="muted small">обработка файла…</p>`;
+  try {
+    const f = await fileToBase64(file);
+    const data = await api("/api/v1/upload_base64", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: $("#user-id").value || "demo_user_1", image: f.base64 }),
+    });
+    const emb = data && data.data ? data.data : data;
+    el.innerHTML = `<p class="ok small">Эталон записан из файла <b>${escapeHtml(f.name)}</b>. embedding_id=<b>${emb.embedding_id}</b>, user_id=<b>${escapeHtml(emb.user_id)}</b></p>`;
+  } catch (e) {
+    el.innerHTML = `<p class="bad small">Ошибка: ${escapeHtml(e.message)}${e.status ? ` (HTTP ${e.status})` : ""}</p>`;
+  }
+}
+
 // ---- Liveness (passive, multipart) ----
 async function doLiveness() {
   const el = $("#liveness-result");
@@ -354,11 +401,16 @@ function openStream(initData) {
   state.wsFramesSent = 0;
 
   state.ws.onopen = () => {
-    $("#active-done").disabled = false;
+    // «Готово» включается только после MIN_FRAMES_BEFORE_DONE отправленных
+    // кадров — иначе вердикт падает в too_few_frames (серверу нужно ≥6 кадров
+    // С лицом; 600мс-интервал + ранний «Готово» давали всего ~5).
+    $("#active-done").disabled = true;
     $("#active-cancel").disabled = false;
     $("#active-init").disabled = true;
-    // Стримим кадры каждые ~600мс (лимит 30 кадров / 60с).
-    state.wsInterval = setInterval(streamFrame, 600);
+    // Стримим кадры каждые ~300мс (быстрее ловятся быстрые действия — моргание;
+    // лимит 30 кадров / 60с на сервере).
+    state.wsInterval = setInterval(streamFrame, 300);
+    updateStreamStatus();
   };
 
   state.ws.onmessage = async (ev) => {
@@ -395,8 +447,27 @@ async function streamFrame() {
     const buf = await blob.arrayBuffer();
     state.ws.send(buf);
     state.wsFramesSent++;
+    updateStreamStatus();
   } catch (e) {
     // камера не готова — пропускаем кадр
+  }
+}
+
+// Сколько кадров клиент должен отправить прежде, чем даст нажать «Готово».
+// Серверу нужно ≥6 кадров С лицом (LIVENESS_MIN_FRAMES); берём с запасом,
+// т.к. часть кадров может прийти без лица (observe_frame → None → пропуск).
+const MIN_FRAMES_BEFORE_DONE = 10;
+
+function updateStreamStatus() {
+  const sent = state.wsFramesSent;
+  if (sent < MIN_FRAMES_BEFORE_DONE) {
+    $("#active-done").disabled = true;
+    $("#active-status").textContent =
+      `Стрим: отправлено ${sent}/${MIN_FRAMES_BEFORE_DONE} кадров. Держите лицо в кадре и медленно выполните действия — «Готово» станет активным.`;
+  } else {
+    $("#active-done").disabled = false;
+    $("#active-status").textContent =
+      `Стрим: отправлено ${sent} кадров. Выполните все показанные действия и нажмите «Готово».`;
   }
 }
 
@@ -417,10 +488,21 @@ function handleResult(msg) {
   const live = msg.is_live;
   state.livenessToken = msg.liveness_token || null;
   const si = msg.spoofing_indicators || {};
+  const reason = msg.reason || si.reason || "";
+  const nFrames = typeof msg.n_frames === "number" ? msg.n_frames : null;
   const rows = [`<span class="badge badge-${live ? "ok" : "bad"}">is_live: ${live}</span>`];
-  if (state.livenessToken) rows.push(`<p class="ok small">liveness_token получен (в памяти, TTL 120с). Можно «Verify active».</p>`);
-  else rows.push(`<p class="bad small">liveness_token не выдан. ${si.reason ? "Причина: " + si.reason : ""}</p>`);
-  if (si.consistency) rows.push(`<p class="small">consistency: ${si.consistency}</p>`);
+  if (state.livenessToken) {
+    rows.push(`<p class="ok small">liveness_token получен (в памяти, TTL 120с). Можно «Verify active».</p>`);
+  } else {
+    rows.push(`<p class="bad small">liveness_token не выдан. ${reason ? "Причина: " + reason : ""}</p>`);
+  }
+  // too_few_frames — consistency не вычислялась (early-return на сервере),
+  // показывать «consistency: fail» тут вводит в заблуждение — поясняем кадрами.
+  if (reason === "too_few_frames") {
+    rows.push(`<p class="small">Слишком мало кадров с лицом${nFrames !== null ? ` (${nFrames}/6)` : ""}. Держите лицо в кадре и стримите дольше до «Готово».</p>`);
+  } else if (si.consistency) {
+    rows.push(`<p class="small">consistency: ${si.consistency}</p>`);
+  }
   $("#active-result").innerHTML = rows.join("");
   $("#active-verify").disabled = !state.livenessToken;
   $("#active-status").textContent = live ? "Challenge пройден." : "Challenge не пройден — спуфинг или действия не выполнены.";
@@ -429,11 +511,15 @@ function handleResult(msg) {
 }
 
 function activeDone() {
-  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
-    stopStreaming();
-    state.ws.send(JSON.stringify({ cmd: "done" }));
-    $("#active-status").textContent = "Отправлен cmd:done — ожидание вердикта…";
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+  if (state.wsFramesSent < MIN_FRAMES_BEFORE_DONE) {
+    $("#active-status").textContent =
+      `Слишком мало кадров (${state.wsFramesSent}/${MIN_FRAMES_BEFORE_DONE}). Подождите, пока набор достаточно, затем «Готово».`;
+    return;
   }
+  stopStreaming();
+  state.ws.send(JSON.stringify({ cmd: "done" }));
+  $("#active-status").textContent = "Отправлен cmd:done — ожидание вердикта…";
 }
 
 function activeCancel() {
@@ -516,6 +602,18 @@ document.addEventListener("DOMContentLoaded", () => {
 
   $("#verify-run").addEventListener("click", () => doVerify("#verify-result"));
   $("#upload-run").addEventListener("click", doUpload);
+  $("#upload-file").addEventListener("change", (e) => {
+    const file = e.target.files && e.target.files[0];
+    const nameEl = $("#upload-file-name");
+    if (file) {
+      if (nameEl) nameEl.textContent = `Выбран: ${file.name} (${(file.size / 1024).toFixed(0)} КБ)`;
+      doUploadFromFile(file);
+    } else if (nameEl) {
+      nameEl.textContent = "";
+    }
+    // Сбрасываем input, чтобы тот же файл можно было выбрать повторно.
+    e.target.value = "";
+  });
   $("#liveness-run").addEventListener("click", doLiveness);
 
   $("#active-init").addEventListener("click", activeInit);
