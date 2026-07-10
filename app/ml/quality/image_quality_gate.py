@@ -55,6 +55,10 @@ class ImageQualityGate:
         self.min_lower_face_skin_frac = float(settings.QUALITY_MIN_LOWER_FACE_SKIN_FRAC)
         self.glasses_detect_enabled = bool(settings.QUALITY_GLASSES_DETECT_ENABLED)
         self.max_eye_edge_density = float(settings.QUALITY_MAX_EYE_EDGE_DENSITY)
+        # Солнцезащитные очки: затенение глаз (тёмная линза) — отдельный сигнал от
+        # edge-density (оправы). См. config QUALITY_DARK_EYES_*.
+        self.dark_eyes_detect_enabled = bool(settings.QUALITY_DARK_EYES_DETECT_ENABLED)
+        self.max_eye_dark_ratio = float(settings.QUALITY_MAX_EYE_DARK_RATIO)
 
     def _wrap_result(
         self,
@@ -212,7 +216,11 @@ class ImageQualityGate:
                 # «улучшите свет» (снятие маски часто и свет выправит).
                 occ_flags = self._check_occlusion(face_crop, pts_crop)
                 details["occlusion_flags"] = occ_flags
-                if occ_flags["mask_detected"] or occ_flags["glasses_detected"]:
+                if (
+                    occ_flags["mask_detected"]
+                    or occ_flags["glasses_detected"]
+                    or occ_flags["sunglasses_detected"]
+                ):
                     # Не через _wrap_result: retry всегда, soft/hard/off не действуют.
                     occ_details = {
                         **details,
@@ -530,8 +538,10 @@ class ImageQualityGate:
         flags: dict[str, Any] = {
             "mask_detected": False,
             "glasses_detected": False,
+            "sunglasses_detected": False,
             "lower_face_skin_frac": None,
             "eye_edge_density": None,
+            "eye_dark_ratio": None,
         }
         h, w = face_crop.shape[:2]
         if pts_crop is None:
@@ -592,5 +602,39 @@ class ImageQualityGate:
                 flags["eye_edge_density"] = round(ed, 3)
                 if ed > self.max_eye_edge_density:
                     flags["glasses_detected"] = True
+
+        # --- Солнцезащитные очки: затенение глаз относительно подглазной зоны. ---
+        # edge-density ловит оправу/линзы по градиенту, но гладкая тёмная линза
+        # без краёв его не триггерит. Тёмное стекло затемняет только глаза; референс
+        # — скуловая зона ПОД глазами (выше рта): всегда внутри bbox детектора (в
+        # отличие от лба, который часто обрезан плотным bbox), не затеняется очками
+        # и не закрывается маской. ratio eye_band_mean / cheek_mean падает на очках.
+        # Робастно к свету: тень/неравномерность обычно сохраняет eyes≈cheeks (ratio
+        # ~1); в темноте всё тёмно (ratio ~1); солнцезащитные линзы → глаза << щёк.
+        if self.dark_eyes_detect_enabled:
+            gray_face = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
+            fh, fw = gray_face.shape[:2]
+            if fh >= 6 and fw >= 6:
+                eye_dist = float(abs(right_eye[0] - left_eye[0]))
+                x_l = int(max(0, min(left_eye[0], right_eye[0]) - 0.10 * eye_dist))
+                x_r = int(min(fw, max(left_eye[0], right_eye[0]) + 0.10 * eye_dist))
+                eye_y = float((left_eye[1] + right_eye[1]) / 2.0)
+                half = max(2, int(eye_dist * 0.22))
+                # Глазная зона (плотно вокруг глаз) и подглазная/скуловая зона.
+                y0 = max(0, int(eye_y - half * 0.6))
+                y1 = min(fh, int(eye_y + half * 0.6))
+                r0 = max(0, int(eye_y + half * 1.2))
+                r1 = min(fh, int(eye_y + half * 2.0))
+                if x_r > x_l and y1 > y0 and r1 > r0:
+                    eye_band = gray_face[y0:y1, x_l:x_r]
+                    cheek_band = gray_face[r0:r1, x_l:x_r]
+                    if eye_band.size > 0 and cheek_band.size > 0:
+                        eye_mean = float(eye_band.mean())
+                        cheek_mean = float(cheek_band.mean())
+                        if cheek_mean > 1e-3:
+                            ratio = eye_mean / cheek_mean
+                            flags["eye_dark_ratio"] = round(ratio, 3)
+                            if ratio < self.max_eye_dark_ratio:
+                                flags["sunglasses_detected"] = True
 
         return flags

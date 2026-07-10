@@ -183,6 +183,51 @@ def test_glasses_detect_disabled_skips_glasses():
     assert res.details["occlusion_flags"]["glasses_detected"] is False
 
 
+def _dark_eyes_only_gate() -> ImageQualityGate:
+    """Gate с отключёнными mask/glasses — изолирует детекцию тёмных глаз
+    (солнцезащитные очки): тёмная прямоугольная зона не должна триггерить
+    ни skin-tone mask, ни edge-density glasses."""
+    g = ImageQualityGate()
+    g.mask_detect_enabled = False
+    g.glasses_detect_enabled = False
+    return g
+
+
+def test_sunglasses_dark_eyes_triggers_remove_occlusion():
+    # Солнцезащитные очки: глазная зона (y≈71-89, между глазами) затемнена тёмной
+    # линзой, лоб над ней (y≈62-71) остался светлым → eye_dark_ratio < порога.
+    gate = _dark_eyes_only_gate()
+    img = _skin_bgr()  # весь кроп светлый skin-tone (V=180)
+    img[71:89, 86:134] = 18  # тёмная линза в глазной зоне
+    res = gate.evaluate_detection(_BBOX, _LM, image=img)
+    assert res.passed is False
+    assert res.reason == "remove_occlusion"
+    occ = res.details["occlusion_flags"]
+    assert occ["sunglasses_detected"] is True
+    assert occ["eye_dark_ratio"] < gate.max_eye_dark_ratio
+
+
+def test_dark_eyes_detect_disabled_skips_sunglasses():
+    gate = _dark_eyes_only_gate()
+    gate.dark_eyes_detect_enabled = False
+    img = _skin_bgr()
+    img[71:89, 86:134] = 18  # тёмные глаза
+    res = gate.evaluate_detection(_BBOX, _LM, image=img)
+    assert res.passed is True
+    assert res.details["occlusion_flags"]["sunglasses_detected"] is False
+
+
+def test_normal_face_does_not_trigger_sunglasses():
+    # Светлое skin-tone лицо без очков: лоб и глаза одинаковой яркости → ratio ~1.
+    gate = _dark_eyes_only_gate()
+    img = _skin_bgr()
+    res = gate.evaluate_detection(_BBOX, _LM, image=img)
+    assert res.passed is True
+    occ = res.details["occlusion_flags"]
+    assert occ["sunglasses_detected"] is False
+    assert occ["eye_dark_ratio"] >= gate.max_eye_dark_ratio
+
+
 def test_occlusion_takes_precedence_over_lighting():
     # Маска + плохой свет: клиенту полезнее «снимите маску» (remove_occlusion),
     # а не «улучшите свет» — окклюзия проверяется раньше lighting.

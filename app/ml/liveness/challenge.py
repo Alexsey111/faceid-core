@@ -15,15 +15,12 @@
 # выбора eye-контура у 106pt (self-calibrating по proximity, без хардкода индексов).
 from __future__ import annotations
 
-import logging
 import time
 from dataclasses import dataclass, field
 
 import numpy as np
 
 from app.core.config import settings
-
-logger = logging.getLogger("liveness.challenge")
 
 # Набор действий. turn_left/turn_right детектятся одинаково (экскурсия yaw ≥ порога,
 # любое направление) — MVP принимает любой поворот (print повернуть не может в

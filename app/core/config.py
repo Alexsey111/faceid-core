@@ -207,6 +207,18 @@ class Settings(BaseSettings):
     QUALITY_MIN_LOWER_FACE_SKIN_FRAC: float = 0.45  # ниже → mask_detected
     QUALITY_GLASSES_DETECT_ENABLED: bool = True
     QUALITY_MAX_EYE_EDGE_DENSITY: float = 0.25  # Sobel-magnitude mean/255; выше → glasses_detected
+    # Солнцезащитные очки (тёмные/среднепрозрачные линзы): edge-density по оправе
+    # их не ловит (гладкая тёмная линза без сильных краёв) → кадр уходит в passive
+    # liveness, где MiniFASNet клеймит затенённые глаза как spoof (ложный reject
+    # легального пользователя). Сигнал: глазная зона темнее подглазной/скуловой
+    # (ratio eye_band_mean / cheek_band_mean). Ниже порога → sunglasses_detected →
+    # retry/remove_occlusion (как маска: «снимите очки»), а не spoof.
+    QUALITY_DARK_EYES_DETECT_ENABLED: bool = True
+    QUALITY_MAX_EYE_DARK_RATIO: float = 0.77  # eye/cheek brightness; ниже → sunglasses_detected
+    # Калибровано на веб-камере c110 (5 в очках / 5 без): очки 0.587–0.702,
+    # без очков 0.842–1.097, зазор 0.140. 0.77 — центр зазора (запасы ~0.07 с
+    # обеих сторон). На других камерах/лицах диапазон может плавать — при росте
+    # False Retry/Pass пересобрать калибровку на 20–30 лицах.
     # «Серая» зона margin верификации: при попадании в неё ok-ответ несёт
     # challenge_recommended=True — клиент зовёт WS active-challenge (turn/nod).
     CHALLENGE_MARGIN_LOW: float = 0.05
