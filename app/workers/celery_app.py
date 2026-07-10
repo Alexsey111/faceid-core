@@ -4,14 +4,27 @@ import logging
 import os
 
 from celery import Celery
-from celery.signals import worker_ready
+from celery.signals import setup_logging as celery_setup_logging, worker_ready
 from kombu import Queue
 from prometheus_client import start_http_server
 from app.core.config import settings
+from app.core.logger import setup_logging
 
+# НЕ вызываем setup_logging() на импорте: он делает root.handlers = [handler],
+# что затёрло бы конфигурацию логирования Celery и ломало вывод при импорте
+# модуля (в т.ч. в тестах/других worker-тасках). Вместо этого подключаемся к
+# Celery-сигналу setup_logging — он срабатывает при старте worker'а до
+# дефолтного Celery-hijack root-логгера, позволяя полностью заменить конфиг
+# на наш JSON-логгер с BiometryRedactionFilter.
 logger = logging.getLogger(__name__)
 logging.getLogger("insightface").setLevel(logging.WARNING)
 logging.getLogger("onnxruntime").setLevel(logging.WARNING)
+
+
+@celery_setup_logging.connect
+def _configure_logging(**_kwargs) -> None:
+    """JSON-логгер с redaction для celery-worker'а (вместо Celery-дефолта)."""
+    setup_logging()
 
 
 celery_app = Celery(

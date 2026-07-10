@@ -12,6 +12,7 @@
 # filter обходится (например, при логировании вложенных dict'ов, построенных
 # уже после фильтра).
 
+import contextvars
 import json
 import logging
 import re
@@ -22,6 +23,35 @@ try:  # numpy опционален для импорта логгера (не т
     import numpy as _np
 except Exception:  # pragma: no cover
     _np = None
+
+# Сквозной trace_id для корреляции логов API → queue → worker.
+# Устанавливается request_id_middleware (request_id) и в worker при обработке job.
+TRACE_ID: contextvars.ContextVar[str | None] = contextvars.ContextVar("trace_id", default=None)
+
+
+def set_trace_id(trace_id: str | None) -> contextvars.Token[str | None]:
+    """Установить trace_id в текущем execution context (async/task/thread)."""
+    return TRACE_ID.set(trace_id)
+
+
+def get_trace_id() -> str | None:
+    """Получить текущий trace_id из contextvar."""
+    return TRACE_ID.get()
+
+
+def reset_trace_id(token: contextvars.Token[str | None] | None) -> None:
+    """Сбросить trace_id по токену от set_trace_id."""
+    if token is not None:
+        TRACE_ID.reset(token)
+
+
+def bind_trace_id(extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Дополнить extra-поля trace_id из contextvar (если есть и не задан)."""
+    out = dict(extra) if extra else {}
+    trace_id = get_trace_id()
+    if trace_id is not None and "trace_id" not in out:
+        out["trace_id"] = trace_id
+    return out
 
 
 _STANDARD_LOG_RECORD_KEYS = {
@@ -202,6 +232,12 @@ class JsonFormatter(logging.Formatter):
         }
         if extra_fields:
             log_record.update(extra_fields)
+
+        # Сквозной trace_id: приоритет у extra-поля, fallback на contextvar.
+        if "trace_id" not in log_record:
+            trace_id = get_trace_id()
+            if trace_id is not None:
+                log_record["trace_id"] = trace_id
 
         # Defense-in-depth: ещё один прогон redaction по итоговому dict —
         # на случай, если BiometryRedactionFilter не навешен на handler/логгер

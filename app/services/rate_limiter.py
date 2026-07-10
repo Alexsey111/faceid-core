@@ -35,14 +35,16 @@ class RateLimiter:
         if getattr(settings, "ENV", "").lower() in {"testing", "test"}:
             return
 
-        client = request.client
-        if client and client.host:
-            client_ip = client.host
-        else:
-            client_ip = request.headers.get("X-Real-IP")
-            if not client_ip:
-                forwarded = request.headers.get("X-Forwarded-For")
-                client_ip = forwarded.split(",")[0].strip() if forwarded else "unknown"
+        # За reverse-proxy/LB request.client.host — это IP прокси, а не клиента.
+        # Сначала пытаемся достать реальный IP из заголовков, затем fallback.
+        client_ip: str | None = request.headers.get("X-Real-IP")
+        if not client_ip:
+            forwarded = request.headers.get("X-Forwarded-For")
+            if forwarded:
+                client_ip = forwarded.split(",")[0].strip()
+        if not client_ip:
+            client = request.client
+            client_ip = client.host if client and client.host else "unknown"
 
         key = f"rate:{key_prefix}:{client_ip}"
         count = cast(int, redis_client.incr(key))

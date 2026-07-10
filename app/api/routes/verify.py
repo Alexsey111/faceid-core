@@ -121,6 +121,7 @@ async def _enqueue_verify_job(
     user_id: str | None,
     require_liveness: bool,
     priority: str,
+    trace_id: str | None = None,
 ) -> None:
     job_repo = VerificationJobRepository(db)
     await job_repo.create(job_id=job_id, status=JobStatus.pending)
@@ -151,6 +152,7 @@ async def _enqueue_verify_job(
             "require_liveness": require_liveness,
             "accepted_at_ns": accepted_at_ns,
             "enqueued_at_ns": now_epoch_ns(),
+            "trace_id": trace_id,
         }
         await VerifyJobQueue.enqueue_job(enqueue_payload, admission=None, job_id=job_id)
     except Exception as exc:
@@ -165,6 +167,7 @@ async def _enqueue_verify_job(
             "image_url": object_name,
             "queue": VerifyJobQueue.QUEUE_NAME,
             "priority": priority,
+            "trace_id": trace_id,
         },
     )
 
@@ -250,6 +253,7 @@ async def verify_base64(
         user_id=request.user_id,
         require_liveness=effective_require_liveness,
         priority="high",
+        trace_id=job_id,
     )
 
     return {"job_id": job_id, "status": "pending"}
@@ -308,6 +312,7 @@ async def verify_async(
             user_id=user_id,
             require_liveness=require_liveness,
             priority=priority,
+            trace_id=job_id,
         )
 
         return {
@@ -386,6 +391,7 @@ async def verify_async_base64(
             user_id=request.user_id,
             require_liveness=require_liveness,
             priority=priority,
+            trace_id=job_id,
         )
 
         return {

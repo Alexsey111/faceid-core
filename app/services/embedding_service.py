@@ -26,17 +26,25 @@ class EmbeddingService:
 
     async def enroll_face(
         self,
-        user_id: int,
+        user_id: int | str,
         image_bytes: bytes
     ) -> Dict[str, Any]:
         if user_id is None:
             raise ValueError("user_id is required")
 
-        # Create user if not exists, get internal ID
-        internal_user_id: int = user_id
+        external_id = str(user_id)
+
+        # Create user if not exists, get internal integer ID for DB relations.
+        internal_user_id: int
         if self.user_repo:
-            user = await self.user_repo.get_or_create(str(user_id))
-            internal_user_id = getattr(user, 'id', user_id)
+            user = await self.user_repo.get_or_create(external_id)
+            internal_user_id = user.id
+        else:
+            # Legacy/tests path: no repo → try integer fallback.
+            try:
+                internal_user_id = int(user_id)
+            except (ValueError, TypeError):
+                internal_user_id = user_id  # type: ignore[assignment]
 
         result = self.pipeline.process(image_bytes)
 

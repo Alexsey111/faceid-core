@@ -177,6 +177,7 @@ def _log_admission_rejected(exc: AdmissionRejected) -> None:
             "reason": exc.reason.value,
             "job_id": exc.job_id,
             "request_id": exc.request_id,
+            "trace_id": exc.request_id,
             "queue_len": exc.queue_len,
             "inflight": exc.inflight,
             "estimated_delay_ms": exc.estimated_delay_ms,
@@ -483,6 +484,7 @@ async def verify_async(http_request: Request):
             "require_liveness": payload.require_liveness,
             "accepted_at_ns": accepted_at_ns,
             "enqueued_at_ns": enqueued_at_ns,
+            "trace_id": request_id,
         }
 
         with _observe_admission_stage("enqueue"):

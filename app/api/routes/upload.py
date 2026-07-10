@@ -27,7 +27,7 @@ async def upload_file(
     """
     Upload reference face for a user via multipart/form-data.
     """
-    RateLimiter.check(http_request, "upload", limit=5)
+    RateLimiter.check(http_request, "upload", limit=30)
 
     # Валидация входа (consistency с /verify): MIME + размер.
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -47,7 +47,7 @@ async def upload_file(
         service = EmbeddingService(embedding_repo, user_repo)
 
         result = await service.enroll_face(
-            user_id=int(user_id),
+            user_id=user_id,
             image_bytes=image_bytes
         )
 
@@ -72,7 +72,7 @@ async def upload_base64(
     """
     Upload reference face for a user via JSON with base64 image.
     """
-    RateLimiter.check(http_request, "upload", limit=5)
+    RateLimiter.check(http_request, "upload", limit=30)
 
     try:
         image_bytes = base64.b64decode(request.image)
@@ -88,7 +88,7 @@ async def upload_base64(
         service = EmbeddingService(embedding_repo, user_repo)
 
         result = await service.enroll_face(
-            user_id=int(request.user_id),
+            user_id=request.user_id,
             image_bytes=image_bytes
         )
 

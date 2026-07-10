@@ -80,6 +80,26 @@ logger = logging.getLogger(__name__)
 METRICS_ENABLED = True
 
 
+def _job_extra(job_data: dict[str, Any] | None = None, **kwargs: Any) -> dict[str, Any]:
+    """Сформировать extra-поля для лога worker'а с trace_id из job payload."""
+    extra = dict(kwargs)
+    trace_id = _trace_id_from_job_data(job_data)
+    if trace_id is not None:
+        extra["trace_id"] = trace_id
+    job_id = job_data.get("job_id") if job_data is not None else None
+    if job_id is not None:
+        extra["job_id"] = job_id
+    return extra
+
+
+def _trace_id_from_job_data(job_data: dict[str, Any] | None) -> str | None:
+    """Извлечь trace_id из job payload (если есть)."""
+    if job_data is None:
+        return None
+    payload = job_data.get("payload") or {}
+    return payload.get("trace_id")
+
+
 def _dispatch_webhook(job_id: str, terminal_state: str) -> None:
     """
     Fire-and-forget webhook-уведомление о терминальном состоянии job'а (ТЗ 3.2).
@@ -536,6 +556,7 @@ def _log_stage_times(
     outcome: str | None = None,
     quality_reason: str | None = None,
     quality_details: dict[str, Any] | None = None,
+    trace_id: str | None = None,
 ) -> None:
     stage_timings = _extract_stage_timings(prepared_timings)
     if vector_search_ms is not None:
@@ -589,114 +610,35 @@ def _log_stage_times(
     )
     unattributed_ms = max(0.0, processing_ms - accounted_ms)
 
-    logger.warning(
-        "stage_times job_id=%s outcome=%s quality_reason=%s quality_stage=%s quality_mode=%s quality_warning=%s "
-        "image_width=%s image_height=%s blur_score=%s brightness=%s contrast=%s "
-        "face_width=%s face_height=%s min_face_side=%s "
-        "queue_delay_ms=%.3f dequeue_to_start_ms=%.3f preprocess_ms=%.3f quality_gate_pre_ms=%.3f "
-        "batch_collect_wait_ms=%.3f batch_prepare_wall_ms=%.3f batch_encode_wall_ms=%.3f "
-        "batch_search_wall_ms=%.3f batch_verify_loop_wait_ms=%.3f "
-        "detect_ms=%.3f detect_blob_ms=%.3f detect_forward_ms=%.3f detect_decode_ms=%.3f "
-        "align_crop_ms=%.3f quality_gate_face_ms=%.3f liveness_ms=%.3f "
-        "encode_ms=%.3f encode_preprocess_ms=%.3f encode_ort_run_ms=%.3f encode_postprocess_ms=%.3f "
-        "vector_search_ms=%.3f anti_replay_ms=%.3f is_genuine_ms=%.3f "
-        "decision_ms=%.3f verification_log_write_ms=%.3f verify_from_pipeline_result_ms=%.6f "
-        "result_write_ms=%.3f processing_ms=%.3f unattributed_ms=%.3f e2e_ms=%.3f faiss_enabled=%s",
-        job_id,
-        outcome or "unknown",
-        quality_reason,
-        quality_stage,
-        quality_mode,
-        quality_warning,
-        image_width,
-        image_height,
-        blur_score,
-        brightness,
-        contrast,
-        face_width,
-        face_height,
-        min_face_side,
-        queue_delay_ms,
-        dequeue_to_start_ms,
-        stage_timings["preprocess_ms"],
-        stage_timings["quality_gate_pre_ms"],
-        stage_timings["batch_collect_wait_ms"],
-        stage_timings["batch_prepare_wall_ms"],
-        stage_timings["batch_encode_wall_ms"],
-        stage_timings["batch_search_wall_ms"],
-        stage_timings["batch_verify_loop_wait_ms"],
-        stage_timings["detect_ms"],
-        stage_timings["detect_blob_ms"],
-        stage_timings["detect_forward_ms"],
-        stage_timings["detect_decode_ms"],
-        stage_timings["align_crop_ms"],
-        stage_timings["quality_gate_face_ms"],
-        stage_timings["liveness_ms"],
-        stage_timings["encode_ms"],
-        stage_timings["encode_preprocess_ms"],
-        stage_timings["encode_ort_run_ms"],
-        stage_timings["encode_postprocess_ms"],
-        stage_timings["vector_search_ms"],
-        stage_timings["anti_replay_ms"],
-        stage_timings["is_genuine_ms"],
-        stage_timings["decision_ms"],
-        stage_timings["verification_log_write_ms"],
-        stage_timings["verify_from_pipeline_result_ms"],
-        result_write_value,
-        processing_ms,
-        unattributed_ms,
-        e2e_ms,
-        bool(settings.FAISS_ENABLED),
-    )
-    print(
-        "stage_times "
-        f"job_id={job_id} "
-        f"outcome={outcome or 'unknown'} "
-        f"quality_reason={quality_reason} "
-        f"quality_stage={quality_stage} "
-        f"quality_mode={quality_mode} "
-        f"quality_warning={quality_warning} "
-        f"image_width={image_width} "
-        f"image_height={image_height} "
-        f"blur_score={blur_score} "
-        f"brightness={brightness} "
-        f"contrast={contrast} "
-        f"face_width={face_width} "
-        f"face_height={face_height} "
-        f"min_face_side={min_face_side} "
-        f"queue_delay_ms={queue_delay_ms:.3f} "
-        f"dequeue_to_start_ms={dequeue_to_start_ms:.3f} "
-        f"preprocess_ms={stage_timings['preprocess_ms']:.3f} "
-        f"quality_gate_pre_ms={stage_timings['quality_gate_pre_ms']:.3f} "
-        f"batch_collect_wait_ms={stage_timings['batch_collect_wait_ms']:.3f} "
-        f"batch_prepare_wall_ms={stage_timings['batch_prepare_wall_ms']:.3f} "
-        f"batch_encode_wall_ms={stage_timings['batch_encode_wall_ms']:.3f} "
-        f"batch_search_wall_ms={stage_timings['batch_search_wall_ms']:.3f} "
-        f"batch_verify_loop_wait_ms={stage_timings['batch_verify_loop_wait_ms']:.3f} "
-        f"detect_ms={stage_timings['detect_ms']:.3f} "
-        f"detect_blob_ms={stage_timings['detect_blob_ms']:.3f} "
-        f"detect_forward_ms={stage_timings['detect_forward_ms']:.3f} "
-        f"detect_decode_ms={stage_timings['detect_decode_ms']:.3f} "
-        f"align_crop_ms={stage_timings['align_crop_ms']:.3f} "
-        f"quality_gate_face_ms={stage_timings['quality_gate_face_ms']:.3f} "
-        f"liveness_ms={stage_timings['liveness_ms']:.3f} "
-        f"encode_ms={stage_timings['encode_ms']:.3f} "
-        f"encode_preprocess_ms={stage_timings['encode_preprocess_ms']:.3f} "
-        f"encode_ort_run_ms={stage_timings['encode_ort_run_ms']:.3f} "
-        f"encode_postprocess_ms={stage_timings['encode_postprocess_ms']:.3f} "
-        f"vector_search_ms={stage_timings['vector_search_ms']:.3f} "
-        f"anti_replay_ms={stage_timings['anti_replay_ms']:.3f} "
-        f"is_genuine_ms={stage_timings['is_genuine_ms']:.3f} "
-        f"decision_ms={stage_timings['decision_ms']:.3f} "
-        f"verification_log_write_ms={stage_timings['verification_log_write_ms']:.3f} "
-        f"verify_from_pipeline_result_ms={stage_timings['verify_from_pipeline_result_ms']:.6f} "
-        f"result_write_ms={result_write_value:.3f} "
-        f"processing_ms={processing_ms:.3f} "
-        f"unattributed_ms={unattributed_ms:.3f} "
-        f"e2e_ms={e2e_ms:.3f} "
-        f"faiss_enabled={bool(settings.FAISS_ENABLED)}",
-        flush=True,
-    )
+    extra: dict[str, Any] = {
+        "job_id": job_id,
+        "outcome": outcome or "unknown",
+        "quality_reason": quality_reason,
+        "quality_stage": quality_stage,
+        "quality_mode": quality_mode,
+        "quality_warning": quality_warning,
+        "image_width": image_width,
+        "image_height": image_height,
+        "blur_score": blur_score,
+        "brightness": brightness,
+        "contrast": contrast,
+        "face_width": face_width,
+        "face_height": face_height,
+        "min_face_side": min_face_side,
+        "queue_delay_ms": queue_delay_ms,
+        "dequeue_to_start_ms": dequeue_to_start_ms,
+        "processing_ms": processing_ms,
+        "e2e_ms": e2e_ms,
+        "unattributed_ms": unattributed_ms,
+        "result_write_ms": result_write_value,
+        "faiss_enabled": bool(settings.FAISS_ENABLED),
+    }
+    # trace_id передаём только если есть — для корреляции с API-логами.
+    if trace_id is not None:
+        extra["trace_id"] = trace_id
+    # Все стадийные тайминги — без биометрии, безопасно для логов.
+    extra.update(stage_timings)
+    logger.info("stage_times", extra=extra)
 
 
 def _build_metrics(
@@ -747,12 +689,15 @@ def _observe_async_job_metrics(metrics: dict[str, float], *, completed: bool = F
 
 
 def _print_metrics(job_id: str, metrics: dict[str, float]) -> None:
-    print(
-        f"[METRICS] job={job_id} "
-        f"queue={metrics['queue_delay']:.2f}s "
-        f"dq_wait={metrics.get('dequeue_to_start', 0.0):.2f}s "
-        f"proc={metrics['processing_time']:.2f}s "
-        f"total={metrics['total_latency']:.2f}s"
+    logger.info(
+        "job_metrics",
+        extra={
+            "job_id": job_id,
+            "queue_delay_s": metrics.get("queue_delay"),
+            "dequeue_to_start_s": metrics.get("dequeue_to_start"),
+            "processing_time_s": metrics.get("processing_time"),
+            "total_latency_s": metrics.get("total_latency"),
+        },
     )
 
 
@@ -815,6 +760,7 @@ def _complete_terminal_job_inline(
     outcome: str | None = None,
     quality_reason: str | None = None,
     quality_details: dict[str, Any] | None = None,
+    trace_id: str | None = None,
 ) -> None:
     result_written_at = time.time()
 
@@ -832,6 +778,7 @@ def _complete_terminal_job_inline(
         outcome=outcome,
         quality_reason=quality_reason,
         quality_details=quality_details,
+        trace_id=trace_id,
     )
 
     _finalize_terminal_job(
@@ -865,6 +812,7 @@ def _safe_observe_terminal_job(
     outcome: str | None = None,
     quality_reason: str | None = None,
     quality_details: dict[str, Any] | None = None,
+    trace_id: str | None = None,
 ) -> None:
     try:
         finished_at = time.time()
@@ -891,16 +839,16 @@ def _safe_observe_terminal_job(
             outcome=outcome,
             quality_reason=quality_reason,
             quality_details=quality_details or {},
+            trace_id=trace_id,
         )
     except Exception:
         logger.exception(
-            "terminal_observe_failed job_id=%s outcome=%s",
-            job_id,
-            outcome or "unknown",
+            "terminal_observe_failed",
+            extra={"job_id": job_id, "outcome": outcome or "unknown", "trace_id": trace_id},
         )
 
 
-def _reject_stale_job(job_id: str, created_at: float, observed_at: float) -> None:
+def _reject_stale_job(job_id: str, created_at: float, observed_at: float, trace_id: str | None = None) -> None:
     write_metrics = _build_metrics(created_at, observed_at, time.time(), dequeued_at=observed_at)
     technical_timestamps = _build_technical_timestamps(
         queue_popped_at=observed_at,
@@ -924,6 +872,7 @@ def _reject_stale_job(job_id: str, created_at: float, observed_at: float) -> Non
         result_write_ms=result_write_ms,
         claim_at=observed_at,
         outcome="expired",
+        trace_id=trace_id,
     )
 
 
@@ -965,7 +914,7 @@ def _decode_and_downscale_image(
 async def warmup():
     global _PIPELINE
 
-    print("WARMUP: starting pipeline warmup...")
+    logger.info("pipeline_warmup_started")
 
     dummy_image = b"\x00" * 1024  # just noise; pipeline is expected to fail
 
@@ -992,7 +941,7 @@ async def warmup():
         except Exception:
             pass
 
-    print("WARMUP: done")
+    logger.info("pipeline_warmup_done")
 
 
 async def collect_batch() -> list[dict[str, Any]]:
@@ -1023,7 +972,12 @@ async def collect_batch() -> list[dict[str, Any]]:
         job["batch_added_at"] = claim_at
         created_at = float(job.get("created_at", claim_at))
         if _is_job_stale(created_at, claim_at):
-            _reject_stale_job(job["job_id"], created_at, claim_at)
+            _reject_stale_job(
+                job["job_id"],
+                created_at,
+                claim_at,
+                trace_id=_trace_id_from_job_data(job),
+            )
             _cleanup_minio_image(
                 job.get("payload", {}).get("image_url"),
                 job["job_id"],
@@ -1055,7 +1009,12 @@ async def collect_batch() -> list[dict[str, Any]]:
         job["worker_claimed_at_ns"] = claim_at_ns
         created_at = float(job.get("created_at", claim_at))
         if _is_job_stale(created_at, claim_at):
-            _reject_stale_job(job["job_id"], created_at, claim_at)
+            _reject_stale_job(
+                job["job_id"],
+                created_at,
+                claim_at,
+                trace_id=_trace_id_from_job_data(job),
+            )
             _cleanup_minio_image(
                 job.get("payload", {}).get("image_url"),
                 job["job_id"],
@@ -1212,6 +1171,7 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     claim_at=worker_claimed_at_ns / 1_000_000_000.0,
                     job_timings=job_timings,
                     outcome="processing_failed",
+                    trace_id=_trace_id_from_job_data(item),
                 )
 
         if batch_candidates:
@@ -1222,9 +1182,11 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     batch_candidates,
                 )
                 logger.info(
-                    "[PREP_BATCH] size=%s prep_ms=%.2f",
-                    len(batch_candidates),
-                    prep_ms,
+                    "batch_prepare_done",
+                    extra={
+                        "batch_size": len(batch_candidates),
+                        "batch_prepare_ms": prep_ms,
+                    },
                 )
 
                 if len(prepared_results) != len(batch_candidates):
@@ -1310,6 +1272,7 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                             claim_at=float(item.get("worker_claimed_at_ns", now_epoch_ns())) / 1_000_000_000.0,
                             job_timings=job_timings,
                             outcome=prepared_failure["outcome"],
+                            trace_id=_trace_id_from_job_data(item),
                         )
                     else:
                         result_write_ms = _timed_result_write(
@@ -1329,6 +1292,7 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                             claim_at=float(item.get("worker_claimed_at_ns", now_epoch_ns())) / 1_000_000_000.0,
                             job_timings=job_timings,
                             outcome="error",
+                            trace_id=_trace_id_from_job_data(item),
                         )
 
         terminal_jobs: list[dict[str, Any]] = []
@@ -1386,6 +1350,7 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     outcome="quality_reject",
                     quality_reason=prepared.get("quality_reason"),
                     quality_details=prepared.get("quality_details", {}),
+                    trace_id=_trace_id_from_job_data(item),
                 )
             elif prepared["status"] == "retry":
                 # Окклюзия (маска/очки): не исход верификации, а запрос пере-съёмки.
@@ -1423,6 +1388,7 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     outcome="retry",
                     quality_reason=reason,
                     quality_details=prepared.get("quality_details", {}),
+                    trace_id=_trace_id_from_job_data(item),
                 )
             elif prepared["status"] == "spoof":
                 write_metrics = _build_metrics(created_at, job_started_at, time.time(), dequeued_at=dequeued_at)
@@ -1458,6 +1424,7 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     outcome="spoof",
                     quality_reason=prepared.get("quality_reason"),
                     quality_details=prepared.get("quality_details", {}),
+                    trace_id=_trace_id_from_job_data(item),
                 )
             else:
                 error_code = prepared.get("error_code")
@@ -1490,6 +1457,7 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     outcome="processing_failed",
                     quality_reason=prepared.get("quality_reason"),
                     quality_details=prepared.get("quality_details", {}),
+                    trace_id=_trace_id_from_job_data(item),
                 )
 
         try:
@@ -1548,24 +1516,29 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                         encoder_batch_timings.get("encode_postprocess_ms_per_image", 0.0)
                     )
                     if prepared_timings:
-                        print(
-                            "[PIPELINE] "
-                            f"job={job_id} "
-                            f"pre={prepared_timings.get('preprocess_ms', 0):.2f} "
-                            f"qpre={prepared_timings.get('quality_gate_pre_ms', 0):.2f} "
-                            f"detect={prepared_timings.get('detect_ms', 0):.2f} "
-                            f"detect_fwd={prepared_timings.get('detect_forward_ms', 0):.2f} "
-                            f"crop={prepared_timings.get('align_crop_ms', 0):.2f} "
-                            f"qface={prepared_timings.get('quality_gate_face_ms', 0):.2f} "
-                            f"live={prepared_timings.get('liveness_ms', 0):.2f} "
-                            f"enc_ort={prepared_timings.get('encode_ort_run_ms', 0):.2f}"
-                        , flush=True)
+                        logger.info(
+                            "encode_stage_timings",
+                            extra=_job_extra(
+                                item,
+                                stage="encode",
+                                preprocess_ms=float(prepared_timings.get("preprocess_ms", 0.0)),
+                                quality_gate_pre_ms=float(prepared_timings.get("quality_gate_pre_ms", 0.0)),
+                                detect_ms=float(prepared_timings.get("detect_ms", 0.0)),
+                                detect_forward_ms=float(prepared_timings.get("detect_forward_ms", 0.0)),
+                                align_crop_ms=float(prepared_timings.get("align_crop_ms", 0.0)),
+                                quality_gate_face_ms=float(prepared_timings.get("quality_gate_face_ms", 0.0)),
+                                liveness_ms=float(prepared_timings.get("liveness_ms", 0.0)),
+                                encode_ort_run_ms=float(prepared_timings.get("encode_ort_run_ms", 0.0)),
+                            ),
+                        )
 
-                    print(
-                        "[ENCODE] "
-                        f"job={job_id} "
-                        f"encode_ms={prepared_timings.get('encode_ms', estimated_encode_ms):.2f}"
-                    , flush=True)
+                    logger.info(
+                        "encode_done",
+                        extra=_job_extra(
+                            item,
+                            encode_ms=float(prepared_timings.get("encode_ms", estimated_encode_ms)),
+                        ),
+                    )
 
                 t0 = perf_counter()
                 async with AsyncSessionLocal() as db:
@@ -1575,7 +1548,13 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                         k=2,
                     )
                 batch_search_ms = (perf_counter() - t0) * 1000.0
-                print(f"[BATCH SEARCH] size={len(ok_jobs)} search_ms={batch_search_ms:.2f}")
+                logger.info(
+                    "batch_search_done",
+                    extra={
+                        "batch_size": len(ok_jobs),
+                        "batch_search_ms": batch_search_ms,
+                    },
+                )
                 estimated_vector_search_ms = batch_search_ms / max(1, len(ok_jobs))
 
                 for item, top_k in zip(ok_jobs, batch_top_k):
@@ -1584,18 +1563,22 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     item["prepared"]["timings"]["batch_search_wall_ms"] = batch_search_ms
 
                 logger.info(
-                    "[BATCH] size=%s ready=%s",
-                    len(prepared_jobs),
-                    len(ok_jobs),
+                    "batch_ready",
+                    extra={
+                        "batch_size": len(prepared_jobs),
+                        "ok_jobs": len(ok_jobs),
+                    },
                 )
         except Exception as exc:
             # Batch-level сбой (например, общий vector-search по батчу). Причина —
             # в server-лог (traceback, метаданные); клиентам уходит status="error"
             # без деталей (_sanitize, 152-ФЗ).
             logger.exception(
-                "verify_batch_failed batch_size=%s error=%s",
-                len(ok_jobs),
-                exc,
+                "verify_batch_failed",
+                extra={
+                    "batch_size": len(ok_jobs),
+                    "error_type": type(exc).__name__,
+                },
             )
             for item in ok_jobs:
                 job_id = item["job_id"]
@@ -1620,6 +1603,7 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     outcome="error",
                     quality_reason=prepared.get("quality_reason"),
                     quality_details=prepared.get("quality_details", {}),
+                    trace_id=_trace_id_from_job_data(item),
                 )
             return
 
@@ -1707,16 +1691,18 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     result["bbox_source_detail"] = prepared.get("bbox_source_detail")
 
                     dequeued_at = item.get("dequeued_at", job_started_at)
-                    print(
-                        "[PIPELINE] "
-                        f"job={job_id} "
-                        f"pre={prepared_timings.get('preprocess_ms', 0):.2f} "
-                        f"qpre={prepared_timings.get('quality_gate_pre_ms', 0):.2f} "
-                        f"detect={prepared_timings.get('detect_ms', 0):.2f} "
-                        f"crop={prepared_timings.get('align_crop_ms', 0):.2f} "
-                        f"qface={prepared_timings.get('quality_gate_face_ms', 0):.2f} "
-                        f"live={prepared_timings.get('liveness_ms', 0):.2f} "
-                        f"vec={prepared_timings.get('vector_search_ms', 0):.2f}"
+                    logger.info(
+                        "verify_pipeline_completed",
+                        extra=_job_extra(
+                            item,
+                            preprocess_ms=float(prepared_timings.get("preprocess_ms", 0.0)),
+                            quality_gate_pre_ms=float(prepared_timings.get("quality_gate_pre_ms", 0.0)),
+                            detect_ms=float(prepared_timings.get("detect_ms", 0.0)),
+                            align_crop_ms=float(prepared_timings.get("align_crop_ms", 0.0)),
+                            quality_gate_face_ms=float(prepared_timings.get("quality_gate_face_ms", 0.0)),
+                            liveness_ms=float(prepared_timings.get("liveness_ms", 0.0)),
+                            vector_search_ms=float(prepared_timings.get("vector_search_ms", 0.0)),
+                        ),
                     )
                     timestamps = {
                         "accepted_at_ns": accepted_at_ns,
@@ -1765,6 +1751,7 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                         outcome="ok",
                         quality_reason=prepared.get("quality_reason"),
                         quality_details=prepared.get("quality_details", {}),
+                        trace_id=_trace_id_from_job_data(item),
                     )
                 except Exception as exc:
                     inc_async_stage_failure("pipeline", exc.__class__.__name__)
@@ -1775,9 +1762,12 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     # кадров/эмбеддингов), чтобы диагностировать «status=error без
                     # причины» в логах worker'а.
                     logger.exception(
-                        "verify_job_failed job_id=%s prepared_status=%s",
-                        job_id,
-                        prepared.get("status"),
+                        "verify_job_failed",
+                        extra={
+                            "job_id": job_id,
+                            "prepared_status": prepared.get("status"),
+                            "trace_id": _trace_id_from_job_data(item),
+                        },
                     )
                     dequeued_at = item.get("dequeued_at", job_started_at)
                     write_metrics = _build_metrics(created_at, job_started_at, time.time(), dequeued_at=dequeued_at)
@@ -1808,12 +1798,19 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                         outcome="error",
                         quality_reason=prepared.get("quality_reason"),
                         quality_details=prepared.get("quality_details", {}),
+                        trace_id=_trace_id_from_job_data(item),
                     )
 
             t_commit = perf_counter()
             await db.commit()
             batch_db_commit_wall_ms = (perf_counter() - t_commit) * 1000.0
-            logger.info("[BATCH COMMIT] commit_ms=%.3f size=%s", batch_db_commit_wall_ms, len(ok_jobs))
+            logger.info(
+                "batch_db_commit_done",
+                extra={
+                    "batch_commit_ms": batch_db_commit_wall_ms,
+                    "batch_size": len(ok_jobs),
+                },
+            )
 
     finally:
         WORKER_ACTIVE_BATCHES.dec()
@@ -1876,7 +1873,10 @@ async def run_worker() -> None:
             try:
                 await process_batch(batch_data)
             except Exception:
-                logger.exception("batch_processing_failed")
+                extra: dict[str, Any] = {}
+                if batch_data:
+                    extra = _job_extra(batch_data[0])
+                logger.exception("batch_processing_failed", extra=extra)
             finally:
                 batch_slots.release()
 

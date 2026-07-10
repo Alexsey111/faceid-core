@@ -16,6 +16,10 @@ from app.core.logger import (
     JsonFormatter,
     _is_biometric_key,
     _redact,
+    bind_trace_id,
+    get_trace_id,
+    reset_trace_id,
+    set_trace_id,
     setup_logging,
 )
 
@@ -177,3 +181,40 @@ def test_setup_logging_installs_redaction_filter():
     finally:
         root.handlers = prev_handlers
         root.filters = prev_filters
+
+
+# --- trace_id (сквозная корреляция API → queue → worker) ---
+
+def test_formatter_includes_trace_id_from_extra():
+    record = _make_record("verify_done", job_id="job-1", trace_id="req-abc-123")
+    line = JsonFormatter().format(record)
+    parsed = json.loads(line)
+    assert parsed["trace_id"] == "req-abc-123"
+
+
+def test_formatter_includes_trace_id_from_contextvar():
+    token = set_trace_id("ctx-trace-xyz")
+    try:
+        record = _make_record("verify_done", job_id="job-2")
+        line = JsonFormatter().format(record)
+        parsed = json.loads(line)
+        assert parsed["trace_id"] == "ctx-trace-xyz"
+    finally:
+        reset_trace_id(token)
+
+
+def test_bind_trace_id_adds_trace_id_from_contextvar():
+    token = set_trace_id("bind-trace-123")
+    try:
+        extra = bind_trace_id({"job_id": "job-3"})
+        assert extra["trace_id"] == "bind-trace-123"
+        assert extra["job_id"] == "job-3"
+        # существующий trace_id не перезаписывается
+        extra2 = bind_trace_id({"trace_id": "existing"})
+        assert extra2["trace_id"] == "existing"
+    finally:
+        reset_trace_id(token)
+
+
+def test_get_trace_id_default_is_none():
+    assert get_trace_id() is None

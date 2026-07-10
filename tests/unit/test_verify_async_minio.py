@@ -94,7 +94,7 @@ async def test_route_uploads_to_minio_and_payload_has_image_url(monkeypatch):
 
     captured: dict = {}
 
-    def fake_enqueue(payload, admission=None):
+    def fake_enqueue(payload, admission=None, job_id=None):
         captured["payload"] = payload
         return "job-1"
 
@@ -129,7 +129,7 @@ async def test_route_cleans_up_minio_object_on_enqueue_failure(monkeypatch):
         staticmethod(fake_evaluate_admission),
     )
 
-    def fake_enqueue(payload, admission=None):
+    def fake_enqueue(payload, admission=None, job_id=None):
         raise RuntimeError("queue broken")
 
     monkeypatch.setattr(verify_async_route.VerifyJobQueue, "enqueue", staticmethod(fake_enqueue))
@@ -166,7 +166,7 @@ async def test_route_minio_upload_failure_returns_503(monkeypatch):
 
     enqueue_called = {"v": False}
 
-    def fake_enqueue(payload, admission=None):
+    def fake_enqueue(payload, admission=None, job_id=None):
         enqueue_called["v"] = True
         return "x"
 

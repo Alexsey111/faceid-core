@@ -82,6 +82,29 @@ async def test_enroll_ok_returns_embedding_id():
     assert res["embedding_id"] == 42
 
 
+@pytest.mark.asyncio
+async def test_enroll_accepts_string_user_id():
+    """user_id может быть строкой (external_id), как в demo/demo_user_1.
+
+    Регрессия ошибки: upload_base64 делал int(request.user_id) и падал
+    с invalid literal for int() with base 10: 'demo_user_1'.
+    """
+    import numpy as np
+    svc = _service_with_pipeline_result({
+        "status": "ok",
+        "embedding": np.zeros(512, dtype=np.float32),
+    })
+    user_repo = MagicMock()
+    fake_user = MagicMock()
+    fake_user.id = 123
+    user_repo.get_or_create = AsyncMock(return_value=fake_user)
+    svc.user_repo = user_repo
+
+    res = await svc.enroll_face(user_id="demo_user_1", image_bytes=b"\x00")
+    assert res["embedding_id"] == 42
+    user_repo.get_or_create.assert_awaited_once_with("demo_user_1")
+
+
 def test_embedding_service_uses_pipeline_factory(monkeypatch):
     """Регрессия бага 2026-07-07: embedding_service должен брать pipeline из
     общего factory (V2 по умолчанию), а НЕ хардкодить FacePipeline (V1).

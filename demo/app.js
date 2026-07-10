@@ -57,7 +57,6 @@ async function camStart() {
     await video.play();
     $("#cam-start").disabled = true;
     $("#cam-stop").disabled = false;
-    $("#snap").disabled = false;
     $("#cam-status").textContent = "Камера активна.";
   } catch (e) {
     $("#cam-status").textContent = "Ошибка камеры: " + e.message;
@@ -72,7 +71,6 @@ function camStop() {
   }
   $("#cam-start").disabled = false;
   $("#cam-stop").disabled = true;
-  $("#snap").disabled = true;
   $("#cam-status").textContent = "Камера остановлена.";
 }
 
@@ -172,23 +170,31 @@ function renderVerifyResult(containerSel, data) {
   if (!data) { el.innerHTML = ""; return; }
   // Паддинг для VerifyEnqueueResponse fallback (job_id, pending)
   if (data.job_id && data.status === "pending") {
-    el.innerHTML = `<p class="muted small">Поставлено в очередь. job_id=${data.job_id}. Поллинг статуса…</p>`;
+    el.innerHTML = `<p class="muted small">Поставлено в очередь. job_id=${data.job_id}. Long-poll /jobs/{id}/wait…</p>`;
     return;
   }
   const si = data.spoofing_indicators || {};
   const qd = data.quality_details || {};
   const rows = [];
-  rows.push(`<div>${statusBadge(data.status, data.match_score ?? data.similarity)}</div>`);
+  // envelope ошибки worker'а: status === "error" и result.error
+  const effectiveStatus = data.status === "error" && data.result && data.result.error
+    ? "processing_failed"
+    : data.status;
+  rows.push(`<div>${statusBadge(effectiveStatus, data.match_score ?? data.similarity)}</div>`);
   if (typeof (data.match_score ?? data.similarity) === "number")
     rows.push(bar("match_score", data.match_score ?? data.similarity));
   if (data.confidence) rows.push(`<p class="small">confidence: <b>${data.confidence}</b></p>`);
   if (typeof data.liveness_passed === "boolean")
     rows.push(`<p class="small">liveness_passed: <b>${data.liveness_passed}</b>` +
       (typeof data.liveness_score === "number" ? ` (score ${data.liveness_score.toFixed(3)})` : "") + `</p>`);
+  if (data.active_note) rows.push(`<p class="small ok">${escapeHtml(data.active_note)}</p>`);
   if (typeof si.real_prob === "number") rows.push(bar("real_prob", si.real_prob));
   if (typeof si.spoof_prob === "number") rows.push(bar("spoof_prob", si.spoof_prob));
   if (data.reason) rows.push(`<p class="small">reason: ${data.reason}</p>`);
   if (data.error_code) rows.push(`<p class="small">error_code: ${data.error_code}</p>`);
+  // envelope-ошибка: result.error от worker'а (152-ФЗ — без биометрии).
+  if (data.result && typeof data.result.error === "string")
+    rows.push(`<p class="small bad">worker error: ${escapeHtml(data.result.error)}</p>`);
   if (data.challenge_recommended)
     rows.push(`<p class="small warn">⚠ рекомендуется active challenge (серая зона)</p>`);
   if (qd && Object.keys(qd).length)
@@ -205,6 +211,10 @@ function escapeHtml(s) {
 async function doVerify(containerSel, override = {}) {
   const el = $(containerSel);
   el.innerHTML = `<p class="muted small">обработка…</p>`;
+  // active-режим: token уже пройден challenge'ом, серверный async-результат
+  // liveness_passed=True не проставляет (worker не знает active_proven).
+  const isActive = override.liveness_mode === "active" ||
+    (!override.liveness_mode && sharedParams().liveness_mode === "active");
   try {
     const image = captureBase64();
     const body = Object.assign(
@@ -217,10 +227,15 @@ async function doVerify(containerSel, override = {}) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     });
-    // Fallback в очередь → поллинг GET /jobs/{id}
+    // /verify_base64 всегда async: {job_id, status:"pending"} → long-poll /jobs/{id}/wait.
     if (data.job_id && data.status === "pending") {
       renderVerifyResult(containerSel, data);
       data = await pollJob(data.job_id);
+    }
+    // active: token consumed = liveness доказан; worker не знает, поэтому фиксируем клиент-side.
+    if (isActive && data && typeof data === "object") {
+      data.liveness_passed = true;
+      data.active_note = "active challenge пройден (liveness_token consumed)";
     }
     renderVerifyResult(containerSel, data);
   } catch (e) {
@@ -228,28 +243,35 @@ async function doVerify(containerSel, override = {}) {
   }
 }
 
-// Поллинг статуса job: GET /api/v1/jobs/{id} каждые 500мс до done/failed/not_found.
-async function pollJob(jobId, timeoutMs = 30000) {
-  const deadline = Date.now() + timeoutMs;
+// Long-poll статуса job: GET /api/v1/jobs/{id}/wait до терминала или таймаута.
+// Сервер ждёт до timeoutMs (макс 30000), после чего возвращает status=processing —
+// тогда цикл повторяет wait. Общий client-side deadline — 60с (cold-start CPU).
+async function pollJob(jobId, overallTimeoutMs = 60000) {
+  const deadline = Date.now() + overallTimeoutMs;
   while (Date.now() < deadline) {
     let data;
     try {
-      data = await api(`/api/v1/jobs/${encodeURIComponent(jobId)}`);
+      const remaining = Math.min(30000, Math.max(1000, deadline - Date.now()));
+      data = await api(`/api/v1/jobs/${encodeURIComponent(jobId)}/wait?timeout=${remaining}`);
     } catch (e) {
       return { status: "processing_failed", reason: e.message };
     }
-    // result содержит статус обработки в поле status (done/processing/not_found)
-    // и терминальный verify-статус в поле result.status либо на верхнем уровне.
     const s = data.status;
-    if (s === "not_found") return { status: "processing_failed", reason: "job not found" };
-    // Терминальные verify-статусы приходят внутри результата.
-    if (data.result && typeof data.result === "object" && data.result.status) {
-      return data.result;
-    }
-    if (s && s !== "pending" && s !== "processing" && s !== "queued") {
+    // Терминальные envelope-статусы worker'а: done | error | expired | failed.
+    if (s === "done" || s === "error" || s === "expired" || s === "failed") {
+      // Внутри envelope result лежит терминальный verify-статус (match/no_match/…).
+      if (data.result && typeof data.result === "object" && data.result.status !== undefined) {
+        return data.result;
+      }
+      // Ошибка worker'а: result.error или top-level error.
       return data;
     }
-    await new Promise((r) => setTimeout(r, 500));
+    // Не терминальный статус (processing/pending/queued/неожиданное) —
+    // безусловно спим перед повтором wait. Раньше sleep был только для
+    // non-pending/queued → при ответе "pending"/"queued" уходил бы в tight
+    // loop без задержки (молотил бы сервер). 250мс достаточно: серверный
+    // wait и так блокирует до timeout, здесь лишь страховка.
+    await new Promise((r) => setTimeout(r, 250));
   }
   return { status: "processing_failed", reason: "timeout waiting for job" };
 }

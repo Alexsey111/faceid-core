@@ -26,7 +26,6 @@
       <div class="cam-controls">
         <button id="cam-start" class="btn">Старт камеры</button>
         <button id="cam-stop"  class="btn btn-ghost" disabled>Стоп</button>
-        <button id="snap"      class="btn btn-accent" disabled>Захватить кадр</button>
       </div>
       <p id="cam-status" class="muted small">Камера не запущена.</p>
       <p class="muted small">Кадры используются только в памяти (152-ФЗ): не сохраняются, не логируются.</p>
@@ -35,11 +34,11 @@
     <!-- Правая панель: режимы -->
     <section class="tabs-panel">
       <nav class="tabs">
-        <button class="tab active" data-tab="verify">Verify</button>
-        <button class="tab"        data-tab="upload">Upload</button>
-        <button class="tab"        data-tab="liveness">Liveness</button>
-        <button class="tab"        data-tab="active">Active Challenge</button>
-        <button class="tab"        data-tab="config">Config</button>
+        <button class="tab active" data-tab="verify">Верификация</button>
+        <button class="tab"        data-tab="upload">Эталон</button>
+        <button class="tab"        data-tab="liveness">Живость</button>
+        <button class="tab"        data-tab="active">Активный челлендж</button>
+        <button class="tab"        data-tab="config">Настройки</button>
       </nav>
 
       <!-- Общие параметры запроса -->
@@ -48,25 +47,25 @@
           <input id="user-id" type="text" value="demo_user_1" />
         </label>
         <label class="checkbox">
-          <input id="require-liveness" type="checkbox" checked /> require_liveness
+          <input id="require-liveness" type="checkbox" checked /> требовать проверку живости
         </label>
         <fieldset class="radio-group">
-          <legend>liveness_mode</legend>
-          <label><input type="radio" name="lmode" value="passive" checked /> passive</label>
-          <label><input type="radio" name="lmode" value="active" /> active</label>
+          <legend>режим проверки живости</legend>
+          <label><input type="radio" name="lmode" value="passive" checked /> пассивный</label>
+          <label><input type="radio" name="lmode" value="active" /> активный</label>
         </fieldset>
       </div>
 
-      <!-- Таб Verify -->
+      <!-- Таб Верификация -->
       <div class="tab-panel active" data-panel="verify">
         <p class="muted small">POST /api/v1/verify_base64 — верификация по кадру с камеры.</p>
         <div class="actions">
-          <button id="verify-run" class="btn btn-accent">Verify</button>
+          <button id="verify-run" class="btn btn-accent">Верифицировать</button>
         </div>
         <div id="verify-result" class="result"></div>
       </div>
 
-      <!-- Таб Upload -->
+      <!-- Таб Эталон -->
       <div class="tab-panel" data-panel="upload">
         <p class="muted small">POST /api/v1/upload_base64 — записать эталон по кадру с камеры.</p>
         <div class="actions">
@@ -75,44 +74,44 @@
         <div id="upload-result" class="result"></div>
       </div>
 
-      <!-- Таб Liveness -->
+      <!-- Таб Живость -->
       <div class="tab-panel" data-panel="liveness">
         <p class="muted small">POST /api/v1/liveness (passive, multipart) — отдельная проверка живости.</p>
         <div class="actions">
-          <button id="liveness-run" class="btn btn-accent">Проверить liveness</button>
+          <button id="liveness-run" class="btn btn-accent">Проверить живость</button>
         </div>
         <div id="liveness-result" class="result"></div>
       </div>
 
-      <!-- Таб Active Challenge -->
+      <!-- Таб Активный челлендж -->
       <div class="tab-panel" data-panel="active">
-        <p class="muted small">Active challenge (WS): init → стрим кадров с действиями → liveness_token → verify active. Защита от cutout/print.</p>
+        <p class="muted small">Активный челлендж (WS): init → стрим кадров с действиями → liveness_token → verify active. Защита от cutout/print.</p>
         <div class="actions">
-          <button id="active-init"  class="btn btn-accent">Начать challenge</button>
-          <button id="active-done"  class="btn" disabled>Готово (done)</button>
+          <button id="active-init"  class="btn btn-accent">Начать челлендж</button>
+          <button id="active-done"  class="btn" disabled>Готово</button>
           <button id="active-cancel" class="btn btn-ghost" disabled>Отмена</button>
         </div>
         <div id="active-actions" class="actions-list"></div>
         <div id="active-status" class="muted small"></div>
         <div id="active-result" class="result"></div>
         <div class="actions">
-          <button id="active-verify" class="btn btn-accent" disabled>Verify active</button>
+          <button id="active-verify" class="btn btn-accent" disabled>Верифицировать активно</button>
         </div>
         <div id="active-verify-result" class="result"></div>
       </div>
 
-      <!-- Таб Config -->
+      <!-- Таб Настройки -->
       <div class="tab-panel" data-panel="config">
-        <p class="muted small">GET /api/v1/config — текущие пороги сервера (read-only). Слайдер — client-side интерпретация match/no_match.</p>
+        <p class="muted small">GET /api/v1/config — текущие пороги сервера (read-only). Слайдер — клиентская интерпретация match/no_match.</p>
         <button id="config-refresh" class="btn">Обновить</button>
         <table id="config-table" class="config-table">
           <thead><tr><th>Параметр</th><th>Значение</th></tr></thead>
           <tbody></tbody>
         </table>
         <div class="slider-wrap">
-          <label for="match-slider">Client-side порог match: <span id="match-slider-val">0.60</span></label>
+          <label for="match-slider">Клиентский порог совпадения: <span id="match-slider-val">0.60</span></label>
           <input id="match-slider" type="range" min="0" max="1" step="0.01" value="0.6" />
-          <p class="muted small">Влияет только на цвет бейджа в результатах verify. Серверный порог не меняется.</p>
+          <p class="muted small">Влияет только на цвет бейджа в результатах верификации. Серверный порог не меняется.</p>
         </div>
       </div>
     </section>
