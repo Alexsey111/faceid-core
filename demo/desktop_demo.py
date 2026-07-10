@@ -985,7 +985,10 @@ class DesktopDemoApp(tk.Tk):
     @staticmethod
     def _occlusion_text(flags: dict[str, Any]) -> str:
         mask = flags.get("mask_detected")
-        glasses = flags.get("glasses_detected")
+        # glasses_detected = edge-density по оправе (прозрачные/медицинские очки);
+        # sunglasses_detected = затенение глаз тёмной линзой (солнцезащитные, edge
+        # их не ловит). Для пользователя это одно действие — «снимите очки».
+        glasses = flags.get("glasses_detected") or flags.get("sunglasses_detected")
         if mask and glasses:
             return "Снимите маску и очки, затем «Переснять»"
         if mask:
@@ -1201,7 +1204,13 @@ class DesktopDemoApp(tk.Tk):
 
     def _set_overlay(self, text: str, color: str) -> None:
         self.overlay_var.set(text)
-        self.overlay.configure(fg=color if text else "#000000")
+        if text:
+            self.overlay.configure(fg=color)
+            self.overlay.place(relx=0.5, rely=0.82, anchor="center")
+        else:
+            # Пустой оверлей скрываем (place_forget), иначе пустой tk.Label с
+            # padx/pady виден поверх превью как маленький чёрный квадрат.
+            self.overlay.place_forget()
 
     # ------------------------------- закрытие ------------------------------
 
