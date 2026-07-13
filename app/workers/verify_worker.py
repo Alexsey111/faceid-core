@@ -125,7 +125,6 @@ QUEUE_NAME = "face_verify_queue"
 MAX_QUEUE_WAIT_SEC = float(os.getenv("MAX_QUEUE_WAIT_SEC", "15.0"))
 MAX_JOB_AGE_MS = int(os.getenv("MAX_JOB_AGE_MS", "0"))
 ENABLE_WORKER_EXPIRY = os.getenv("ENABLE_WORKER_EXPIRY", "false").lower() == "true"
-MAX_IMAGE_SIDE = 480
 BATCH_COLLECT_TIMEOUT = float(os.getenv("BATCH_COLLECT_TIMEOUT", "0.005"))
 BATCH_SIZE = int(os.getenv("BATCH_SIZE", "8"))
 _PIPELINE: Any | None = None
@@ -165,7 +164,7 @@ def _decode_job_payload_sync(
     original_image_bytes = minio_client.get_image(image_url)
     minio_download_ms = (perf_counter() - t0) * 1000.0
 
-    image, worker_pre_timings = _decode_and_downscale_image(original_image_bytes)
+    image, worker_pre_timings = _decode_image(original_image_bytes)
     worker_pre_timings["minio_download_ms"] = minio_download_ms
     return original_image_bytes, image, worker_pre_timings
 
@@ -876,10 +875,17 @@ def _reject_stale_job(job_id: str, created_at: float, observed_at: float, trace_
     )
 
 
-def _decode_and_downscale_image(
+def _decode_image(
     image_bytes: bytes,
-    max_side: int = MAX_IMAGE_SIDE,
 ) -> tuple[np.ndarray | None, dict[str, float]]:
+    """Декодировать bytes в ndarray (full-res, БЕЗ downscale).
+
+    Downscale больше не делается на стороне воркера: pipeline хранит original
+    (кроп лица/occ/embedding/liveness берутся из full-res, чтобы не терять разрешение
+    на 16-МП фото) и отдельно даунскейлит только кадр для быстрой детекции
+    (decode_pair / process_image внутри pipeline). Ключи downscale_ms/jpeg_reencode_ms
+    сохранены как 0.0 — их читают метрики/логи worker-pre stage.
+    """
     timings: dict[str, float] = {}
 
     t0 = perf_counter()
@@ -887,28 +893,13 @@ def _decode_and_downscale_image(
     decoded = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
     timings["image_decode_ms"] = (perf_counter() - t0) * 1000.0
 
-    if decoded is None:
-        timings["downscale_ms"] = 0.0
-        timings["jpeg_reencode_ms"] = 0.0
-        return None, timings
-
-    height, width = decoded.shape[:2]
-    longest_side = max(height, width)
-    if longest_side <= max_side:
-        timings["downscale_ms"] = 0.0
-        timings["jpeg_reencode_ms"] = 0.0
-        return decoded, timings
-
-    scale = max_side / float(longest_side)
-    new_width = max(1, int(round(width * scale)))
-    new_height = max(1, int(round(height * scale)))
-
-    t0 = perf_counter()
-    resized = cv2.resize(decoded, (new_width, new_height), interpolation=cv2.INTER_AREA)
-    timings["downscale_ms"] = (perf_counter() - t0) * 1000.0
+    timings["downscale_ms"] = 0.0
     timings["jpeg_reencode_ms"] = 0.0
 
-    return resized, timings
+    if decoded is None:
+        return None, timings
+
+    return decoded, timings
 
 
 async def warmup():
@@ -1171,7 +1162,7 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                     claim_at=worker_claimed_at_ns / 1_000_000_000.0,
                     job_timings=job_timings,
                     outcome="processing_failed",
-                    trace_id=_trace_id_from_job_data(item),
+                    trace_id=_trace_id_from_job_data(job_data),
                 )
 
         if batch_candidates:

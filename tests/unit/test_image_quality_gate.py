@@ -118,7 +118,9 @@ def test_mask_clean_face_passes():
     assert res.passed is True
     occ = res.details["occlusion_flags"]
     assert occ["mask_detected"] is False
-    assert occ["lower_face_skin_frac"] is not None and occ["lower_face_skin_frac"] > 0.8
+    # v_ratio = mean_V(нижняя зона) / median_V(переносица). На чистом skin-кропе
+    # обе зоны V=180 → v_ratio ≈ 1.0 (>0.8), маски нет.
+    assert occ["lower_face_v_ratio"] is not None and occ["lower_face_v_ratio"] > 0.8
 
 
 def test_mask_detected_triggers_remove_occlusion_regardless_of_mode():
@@ -126,13 +128,28 @@ def test_mask_detected_triggers_remove_occlusion_regardless_of_mode():
     gate.lighting_mode = "soft"  # даже soft не смягчает окклюзию
     gate.mask_detect_enabled = True
     img = _skin_bgr()
-    # Чёрный прямоугольник поверх нижней зоны лица (нос → подбородок).
+    # Чёрный прямоугольник поверх нижней зоны лица (нос → подбородок) = маска.
+    # lower-zone V падает до 0 при V эталона 180 → v_ratio ≈ 0 (<0.50).
     img[110:195, 88:132] = 0
     res = gate.evaluate_detection(_BBOX, _LM, image=img)
     assert res.passed is False
     assert res.reason == "remove_occlusion"
     assert res.details["occlusion_flags"]["mask_detected"] is True
-    assert res.details["occlusion_flags"]["lower_face_skin_frac"] < gate.min_lower_face_skin_frac
+    assert res.details["occlusion_flags"]["lower_face_v_ratio"] < gate.min_lower_face_v_ratio
+
+
+def test_mask_v_ratio_robust_to_illumination():
+    # Регрессия на главную багу: чистое лицо при ТУСКЛОМ свете (V=25 везде).
+    # Старая skin-frac (фиксированный V≥40) давала frac=0 → ложная маска.
+    # Новая v_ratio ОТНОСИТЕЛЬНАЯ: lower V≈ref V → v_ratio≈1 → маски нет.
+    gate = ImageQualityGate()
+    hsv = np.full((200, 200, 3), [10, 120, 25], dtype=np.uint8)  # skin-tone, V=25 (тёмно)
+    img = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+    res = gate.evaluate_detection(_BBOX, _LM, image=img)
+    assert res.passed is True
+    occ = res.details["occlusion_flags"]
+    assert occ["mask_detected"] is False
+    assert occ["lower_face_v_ratio"] is not None and occ["lower_face_v_ratio"] > 0.8
 
 
 def test_mask_detect_disabled_skips_mask():
@@ -143,6 +160,28 @@ def test_mask_detect_disabled_skips_mask():
     res = gate.evaluate_detection(_BBOX, _LM, image=img)
     assert res.passed is True
     assert res.details["occlusion_flags"]["mask_detected"] is False
+
+
+def test_mask_skipped_on_small_face_avoids_false_mask_on_glasses():
+    # Регрессия: на мелком кропе (<occ_min_face_side) lower-face region ~15×20px,
+    # HSV skin-tone фильтр шумит → ложный mask_detected на нормальном лице/очках
+    # (подтверждено логами: 43px, очки → mfrac 0.302 < 0.45 → «снимите маску»).
+    # Фикс 1: mask-детекция пропускается на кропе < occ_min_face_side.
+    # Фикс 2: лицо <64px → hard reject face_too_small. Итог: occ чистая (mask пропущен
+    # → нет ложного «снимите маску»), кадр отбрасывается по размеру.
+    gate = ImageQualityGate()
+    gate.mode = "soft"
+    small_bbox = [80, 80, 113, 135]  # 33×55 → кроп 55×33 < 64
+    lm = np.array([[85, 95], [108, 95], [96, 110], [88, 125], [104, 125]], dtype=np.float32)
+    img = _skin_bgr()
+    # Имитируем «шумный» lower-face: тёмная полоса под носом (как тень/очки-блик).
+    img[125:135, 84:109] = 40
+    res = gate.evaluate_detection(small_bbox, lm, image=img)
+    assert res.passed is False
+    assert res.reason == "face_too_small"  # hard reject по размеру, не ложный mask
+    occ = res.details["occlusion_flags"]
+    assert occ["mask_detected"] is False  # mask-блок пропущен на мелком кропе
+    assert occ["lower_face_v_ratio"] is None
 
 
 def test_glasses_clean_eyes_not_detected():
@@ -226,6 +265,60 @@ def test_normal_face_does_not_trigger_sunglasses():
     occ = res.details["occlusion_flags"]
     assert occ["sunglasses_detected"] is False
     assert occ["eye_dark_ratio"] >= gate.max_eye_dark_ratio
+
+
+def test_sunglasses_on_small_face_soft_mode_skips_dark_eyes():
+    # Регрессия: в soft mode face_too_small смягчался до warning (passed=True) и кадр
+    # уходил в liveness БЕЗ проверки окклюзии (брешь: occ проверялось после размера).
+    # Фикс 1: окклюзия — security-gate, проверяется ПЕРВЫМ (mask/glasses остаются).
+    # Фикс 2: dark-eyes на мелком кропе (<64px) ненадёжен — пропускается.
+    # Фикс 3: лицо <64px — hard reject face_too_small (нельзя надёжно проверить
+    # occ/liveness), обходит soft. Итог на мелком лице в очках: occ чистая (dark-eyes
+    # пропущен) → hard reject face_too_small (не soft-pass, не ложный «снимите маску»).
+    gate = _dark_eyes_only_gate()
+    gate.mode = "soft"
+    small_bbox = [80, 80, 113, 135]  # 33×55 → кроп 55×33 < occ_min_face_side
+    lm = np.array([[85, 95], [108, 95], [96, 110], [88, 125], [104, 125]], dtype=np.float32)
+    img = _skin_bgr()
+    img[92:98, 84:109] = 18  # тёмная линза в eye_band
+    res = gate.evaluate_detection(small_bbox, lm, image=img)
+    assert res.passed is False
+    assert res.reason == "face_too_small"
+    assert res.details.get("quality_hard_reject") is True
+    occ = res.details["occlusion_flags"]
+    assert occ["sunglasses_detected"] is False  # dark-eyes пропущен на мелком кропе
+    assert occ["eye_dark_ratio"] is None
+
+
+def test_small_clean_face_hard_reject():
+    # Маленькое чистое лицо → hard reject face_too_small (<occ_min_face_side):
+    # occ вычислена (security-gate первой), sunglasses=False, dark_eyes пропущен,
+    # но кадр отбрасывается — мелкое лицо нельзя надёжно проверить.
+    gate = _dark_eyes_only_gate()
+    gate.mode = "soft"
+    small_bbox = [80, 80, 113, 135]
+    lm = np.array([[85, 95], [108, 95], [96, 110], [88, 125], [104, 125]], dtype=np.float32)
+    img = _skin_bgr()  # светлое лицо без очков
+    res = gate.evaluate_detection(small_bbox, lm, image=img)
+    assert res.passed is False
+    assert res.reason == "face_too_small"
+    assert res.details.get("quality_hard_reject") is True
+    occ = res.details["occlusion_flags"]
+    assert occ["sunglasses_detected"] is False
+    assert occ["eye_dark_ratio"] is None  # мелкий кроп → dark-eyes пропущен
+
+
+def test_sunglasses_detected_on_large_face_in_soft_mode():
+    # dark-eyes работает на крупном кропе (>=64px): солнцезащитные очки →
+    # remove_occlusion даже в soft mode (security-gate, soft не смягчает).
+    gate = _dark_eyes_only_gate()
+    gate.mode = "soft"
+    img = _skin_bgr()  # 200×200, кроп по _BBOX = 130×100 >= 64
+    img[71:89, 86:134] = 18  # тёмная линза в глазной зоне
+    res = gate.evaluate_detection(_BBOX, _LM, image=img)
+    assert res.passed is False
+    assert res.reason == "remove_occlusion"
+    assert res.details["occlusion_flags"]["sunglasses_detected"] is True
 
 
 def test_occlusion_takes_precedence_over_lighting():

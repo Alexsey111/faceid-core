@@ -1,8 +1,14 @@
-# tests\test_latency.py
-
+# tests\test_latency.py — ручной smoke-тест latency против поднятого api-контейнера.
+# НЕ входит в дефолтный `pytest` (исключён через -m "not live"). Запуск отдельно:
+#   pytest tests/test_latency.py -m live -s   (требует api на localhost:8000,
+#   AUTH_ENABLED=false в окружении api-контейнера).
 import time
 import requests
 import base64
+
+import pytest
+
+pytestmark = pytest.mark.live
 
 
 API = "http://localhost:8000"

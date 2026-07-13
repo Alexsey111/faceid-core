@@ -110,6 +110,19 @@ class ImagePreprocessor:
         image = self.decode(image_bytes)
         return self.process_image(image)
 
+    def decode_pair(
+        self, image_bytes: bytes
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Декодировать bytes и вернуть пару (original, downscaled).
+
+        original — full-res BGR (кроп лица/embedding/occ/liveness берутся из него,
+        чтобы не терять разрешение на 16-МП фото). downscaled — long-side ≤ max_side
+        (для быстрой детекции). Выбрасывает ValueError при битых байтах (как decode).
+        """
+        original = self.decode(image_bytes)
+        downscaled = self.process_image(original)
+        return original, downscaled
+
     def process_image(self, image: np.ndarray) -> np.ndarray:
         """
         Full preprocessing pipeline for already decoded images.

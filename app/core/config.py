@@ -203,18 +203,50 @@ class Settings(BaseSettings):
     # допуска. Детекция всегда; при срабатывании → status="retry", reason=
     # "remove_occlusion" (просим снять и пере-снять). Режим hard/soft/off НЕ действует:
     # retry всегда. Тумблеры позволяют отключить детекцию отдельно.
+    # Окклюзия (маска/очки) — робастные к освещению метрики на основе ОТНОСИ-
+    # ТЕЛЬНЫХ яркостей внутри одного лица (эталон = переносица, заведомо открыта).
+    # Сдвиг света одинаково сдвигает эталон и проверяемую зону → ratio сохраняется.
+    # Перекалибровано 2026-07-13 на серии Camera Roll1 (18 чистых, РАЗНОЕ
+    # освещение) + Camera Roll 11-20 (очки) / 21-30 (маска) через scripts/diag_occ.py.
+    # См. [[no-capture-compensation]] (робастность метрики ≠ компенсация под камеру).
     QUALITY_MASK_DETECT_ENABLED: bool = True
-    QUALITY_MIN_LOWER_FACE_SKIN_FRAC: float = 0.45  # ниже → mask_detected
+    # Маска: v_ratio = mean_V(нижняя зона нос→низ) / median_V(эталон-переносица).
+    # Маска затемняет нижнюю зону (ткань темнее кожи-эталона) → v_ratio падает.
+    # Робастно к свету: оба V сдвигаются вместе. На серии: clean 0.59-1.11,
+    # sunglasses 0.90-2.93, mask 0.31-0.41 — зазор 0.41→0.59, порог 0.50 (запасы
+    # ±0.09). Ниже порога → mask_detected. Safe-fail (эталон ненадёжен / V_ref≈0)
+    # → None, не mask (лучше пропустить маску, которую ловит liveness, чем браковать
+    # чистое). Прежняя skin-frac (доля skin-пикселей по H/S) НЕ работала: нижняя
+    # зона содержит губы (H красный) + тени → clean разброс 0.0-0.99 (перекрытие
+    # с mask). v_ratio игнорирует hue, только относительная яркость ткани vs кожа.
+    QUALITY_MIN_LOWER_FACE_V_RATIO: float = 0.50  # ниже → mask_detected
     QUALITY_GLASSES_DETECT_ENABLED: bool = True
     QUALITY_MAX_EYE_EDGE_DENSITY: float = 0.25  # Sobel-magnitude mean/255; выше → glasses_detected
     # Солнцезащитные очки (тёмные/среднепрозрачные линзы): edge-density по оправе
     # их не ловит (гладкая тёмная линза без сильных краёв) → кадр уходит в passive
     # liveness, где MiniFASNet клеймит затенённые глаза как spoof (ложный reject
-    # легального пользователя). Сигнал: глазная зона темнее подглазной/скуловой
-    # (ratio eye_band_mean / cheek_band_mean). Ниже порога → sunglasses_detected →
-    # retry/remove_occlusion (как маска: «снимите очки»), а не spoof.
+    # легального пользователя). Сигнал: eye_dark_ratio = eye_V_mean / cheek_V_mean
+    # — тёмная линза затемняет глаза относительно подглазной/скуловой зоны. Ниже
+    # порога → sunglasses_detected → retry/remove_occlusion (как маска: «снимите
+    # очки»), а не spoof.
+    # Перекалибровано 2026-07-13 (original-кроп, Camera Roll1 разный свет + Camera
+    # Roll 11-20 очки): clean 0.589-0.883, sunglasses 0.437-0.654, mask 0.655-0.910.
+    # Перекрытие clean-тень/sunglasses в 0.589-0.654 узкое — порог 0.60 ловит тёмные
+    # и среднепрозрачные очки (≤0.60), пропускает чистые-тени 0.60-0.883. 1-2
+    # ложных retry на чистых в глубокой тени 0.589-0.60 (мягче spoof-отказа).
+    # NOTE: sat_drop (eye_S/cheek_S) опробован и ОТМЕНЁН — на реальных очках
+    # sat_drop >1 (не падает), не разделяет (см. scripts/diag_occ.py, память
+    # sunglasses-dark-eyes-retry).
     QUALITY_DARK_EYES_DETECT_ENABLED: bool = True
-    QUALITY_MAX_EYE_DARK_RATIO: float = 0.77  # eye/cheek brightness; ниже → sunglasses_detected
+    QUALITY_MAX_EYE_DARK_RATIO: float = 0.60  # eye_V/cheek_V; ниже → sunglasses_detected
+    # Минимальный размер кропа лица (px по короткой стороне) для геометрических
+    # occ-проверок (mask skin-tone + dark-eyes): на мелком кропе рабочие зоны ~5-20px,
+    # HSV/Sobel-сигналы шумят → ложные срабатывания на нормальном лице (подтверждено:
+    # dark-eyes 39px→0.743, 45px→0.637 < 0.77 без очков; mask 43px→mfrac 0.302 < 0.45
+    # на очках). На кропе < порога mask/dark-eyes пропускаются (glasses edge-density
+    # остаётся — он робастен к масштабу). Это ограничение применимости по разрешению,
+    # НЕ подстройка порогов под плохой свет.
+    QUALITY_OCC_MIN_FACE_SIDE: int = 64
     # Калибровано на веб-камере c110 (5 в очках / 5 без): очки 0.587–0.702,
     # без очков 0.842–1.097, зазор 0.140. 0.77 — центр зазора (запасы ~0.07 с
     # обеих сторон). На других камерах/лицах диапазон может плавать — при росте

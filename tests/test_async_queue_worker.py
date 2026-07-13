@@ -201,17 +201,17 @@ async def test_enqueue_verify_job_success_and_failure(monkeypatch):
             captured["update"] = (job_id, kwargs)
 
     class FakeMinio:
-        def upload_image(self, *args, **kwargs):
-            captured["upload"] = (args, kwargs)
+        def upload_image(self, object_name, data, content_type):
+            captured["upload"] = (object_name, data, content_type)
 
-    class FakeTask:
-        def apply_async(self, **kwargs):
-            captured["task"] = kwargs
+    async def fake_enqueue_job(payload, admission=None, job_id=None):
+        captured["enqueue"] = (payload, job_id)
+        return job_id
 
     db = DummyAsyncSession()
     monkeypatch.setattr(verify_route, "VerificationJobRepository", FakeJobRepo)
     monkeypatch.setattr(verify_route, "MinioClient", FakeMinio)
-    monkeypatch.setattr(verify_route, "verify_task", FakeTask())
+    monkeypatch.setattr(verify_route.VerifyJobQueue, "enqueue_job", fake_enqueue_job)
 
     await verify_route._enqueue_verify_job(
         db=db,
@@ -226,9 +226,13 @@ async def test_enqueue_verify_job_success_and_failure(monkeypatch):
     )
 
     assert captured["create"] == {"job_id": "job-1", "status": verify_route.JobStatus.pending}
-    assert captured["upload"][0] == ("verify/job-1/legacy.jpg", b"img", "image/jpeg")
-    assert captured["task"]["queue"] == "verify_heavy"
-    assert captured["task"]["priority"] == 9
+    assert captured["upload"] == ("verify/job-1/legacy.jpg", b"img", "image/jpeg")
+    payload, job_id = captured["enqueue"]
+    assert job_id == "job-1"
+    assert payload["image_url"] == "verify/job-1/legacy.jpg"
+    assert payload["user_id"] == "7"
+    assert payload["require_liveness"] is True
+    assert "accepted_at_ns" in payload and "enqueued_at_ns" in payload
 
     class BrokenMinio:
         def upload_image(self, *args, **kwargs):
@@ -307,9 +311,9 @@ async def test_verify_async_route_enqueues(monkeypatch):
         staticmethod(fake_evaluate_admission),
     )
 
-    def fake_enqueue(payload, admission=None):
+    def fake_enqueue(payload, admission=None, job_id=None):
         captured["payload"] = payload
-        return "job-xyz"
+        return job_id or "job-xyz"
 
     monkeypatch.setattr(verify_async_route.VerifyJobQueue, "enqueue", staticmethod(fake_enqueue))
 

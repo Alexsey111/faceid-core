@@ -52,13 +52,14 @@ class ImageQualityGate:
         # Окклюзия (маска/очки) — режимов hard/soft/off НЕТ: retry всегда при
         # срабатывании. Тумблеры включают/выключают детекцию каждого типа отдельно.
         self.mask_detect_enabled = bool(settings.QUALITY_MASK_DETECT_ENABLED)
-        self.min_lower_face_skin_frac = float(settings.QUALITY_MIN_LOWER_FACE_SKIN_FRAC)
+        self.min_lower_face_v_ratio = float(settings.QUALITY_MIN_LOWER_FACE_V_RATIO)
         self.glasses_detect_enabled = bool(settings.QUALITY_GLASSES_DETECT_ENABLED)
         self.max_eye_edge_density = float(settings.QUALITY_MAX_EYE_EDGE_DENSITY)
         # Солнцезащитные очки: затенение глаз (тёмная линза) — отдельный сигнал от
         # edge-density (оправы). См. config QUALITY_DARK_EYES_*.
         self.dark_eyes_detect_enabled = bool(settings.QUALITY_DARK_EYES_DETECT_ENABLED)
         self.max_eye_dark_ratio = float(settings.QUALITY_MAX_EYE_DARK_RATIO)
+        self.occ_min_face_side = int(settings.QUALITY_OCC_MIN_FACE_SIDE)
 
     def _wrap_result(
         self,
@@ -185,6 +186,57 @@ class ImageQualityGate:
             "bbox_y2": int(y2),
         }
 
+        # Кроп лица вырезаем один раз — нужен для окклюзия (security) и lighting/noise.
+        # Без image — пропускается (backward-compat: вызовы без image работают как раньше).
+        face_crop = None
+        pts_crop: np.ndarray | None = None
+        if image is not None:
+            face_crop, origin = self._face_crop(image, bbox)
+            if face_crop is not None and face_crop.size > 0:
+                pts_crop = self._landmarks_in_crop(landmarks, origin, face_crop.shape[:2])
+
+        # Окклюзия (маска/очки) — security-gate: проверяем ПЕРВЫМ, до soft-смягчения
+        # face_too_small/bad_pose. Иначе в soft mode маленькое/повёрнутое лицо уходит
+        # в liveness БЕЗ проверки окклюзии (брешь: очки/маска не детектируются →
+        # проходят в match или дают ложный spoof). Retry всегда, soft/hard/off не действуют.
+        if face_crop is not None:
+            occ_flags = self._check_occlusion(face_crop, pts_crop)
+            details["occlusion_flags"] = occ_flags
+            if (
+                occ_flags["mask_detected"]
+                or occ_flags["glasses_detected"]
+                or occ_flags["sunglasses_detected"]
+            ):
+                return QualityCheckResult(
+                    passed=False,
+                    reason="remove_occlusion",
+                    details={
+                        **details,
+                        "quality_gate_mode": self.mode,
+                        "quality_stage": "face",
+                        "quality_warning": "remove_occlusion",
+                        "quality_hard_reject": True,
+                    },
+                )
+
+        # Hard-минимум размера лица для надёжной биометрии: на кропе < occ_min_face_side
+        # геометрические occ-проверки (mask/dark-eyes) пропускаются (ненадёжны), passive
+        # liveness тоже не различает маску/очки (live скачет 0.30-0.99 на чистом/оккл.).
+        # Это security-gate — hard reject, обходит soft-смягчение (мелкое лицо нельзя
+        # проверить ни по occ, ни по liveness). Клиент показывает «приблизьтесь».
+        if min_face_side < self.occ_min_face_side:
+            return QualityCheckResult(
+                passed=False,
+                reason="face_too_small",
+                details={
+                    **details,
+                    "quality_gate_mode": self.mode,
+                    "quality_stage": "face",
+                    "quality_warning": "face_too_small",
+                    "quality_hard_reject": True,
+                },
+            )
+
         if min_face_side < self.min_face_side:
             return self._wrap_result(
                 passed=False,
@@ -204,61 +256,33 @@ class ImageQualityGate:
                 stage="face",
             )
 
-        # Новые проверки (нужен кроп лица). Без image — пропускаются (backward-compat:
-        # существующие вызовы evaluate_detection(bbox, landmarks) работают как раньше).
-        if image is not None:
-            face_crop, origin = self._face_crop(image, bbox)
-            if face_crop is not None and face_crop.size > 0:
-                pts_crop = self._landmarks_in_crop(landmarks, origin, face_crop.shape[:2])
+        # Lighting/noise (capture-качество) — выполняются только при валидном кропе и
+        # после прохождения размера/позы. Окклюзия уже проверена выше.
+        if face_crop is not None:
+            # Lighting (capture-качество) — свой режим QUALITY_LIGHTING_MODE.
+            nose_x = float(pts_crop[2, 0]) if pts_crop is not None else None
+            lighting_check = self._check_lighting(face_crop, nose_x)
+            details.update(lighting_check["details"])
+            if not lighting_check["passed"]:
+                return self._wrap_result(
+                    passed=False,
+                    reason=lighting_check["reason"],
+                    details=details,
+                    stage="face",
+                    mode=self.lighting_mode,
+                )
 
-                # Окклюзия (маска/очки) — блокирующий retry, независим от режимов.
-                # Проверяем ДО lighting: masked-лицо → «снимите маску» полезнее, чем
-                # «улучшите свет» (снятие маски часто и свет выправит).
-                occ_flags = self._check_occlusion(face_crop, pts_crop)
-                details["occlusion_flags"] = occ_flags
-                if (
-                    occ_flags["mask_detected"]
-                    or occ_flags["glasses_detected"]
-                    or occ_flags["sunglasses_detected"]
-                ):
-                    # Не через _wrap_result: retry всегда, soft/hard/off не действуют.
-                    occ_details = {
-                        **details,
-                        "quality_gate_mode": self.mode,
-                        "quality_stage": "face",
-                        "quality_warning": "remove_occlusion",
-                        "quality_hard_reject": True,
-                    }
-                    return QualityCheckResult(
-                        passed=False,
-                        reason="remove_occlusion",
-                        details=occ_details,
-                    )
-
-                # Lighting (capture-качество) — свой режим QUALITY_LIGHTING_MODE.
-                nose_x = float(pts_crop[2, 0]) if pts_crop is not None else None
-                lighting_check = self._check_lighting(face_crop, nose_x)
-                details.update(lighting_check["details"])
-                if not lighting_check["passed"]:
-                    return self._wrap_result(
-                        passed=False,
-                        reason=lighting_check["reason"],
-                        details=details,
-                        stage="face",
-                        mode=self.lighting_mode,
-                    )
-
-                # Шум (capture-качество) — свой режим QUALITY_NOISE_MODE (default off).
-                noise_check = self._check_noise(face_crop)
-                details.update(noise_check["details"])
-                if not noise_check["passed"]:
-                    return self._wrap_result(
-                        passed=False,
-                        reason=noise_check["reason"],
-                        details=details,
-                        stage="face",
-                        mode=self.noise_mode,
-                    )
+            # Шум (capture-качество) — свой режим QUALITY_NOISE_MODE (default off).
+            noise_check = self._check_noise(face_crop)
+            details.update(noise_check["details"])
+            if not noise_check["passed"]:
+                return self._wrap_result(
+                    passed=False,
+                    reason=noise_check["reason"],
+                    details=details,
+                    stage="face",
+                    mode=self.noise_mode,
+                )
 
         return self._wrap_result(
             passed=True,
@@ -539,7 +563,7 @@ class ImageQualityGate:
             "mask_detected": False,
             "glasses_detected": False,
             "sunglasses_detected": False,
-            "lower_face_skin_frac": None,
+            "lower_face_v_ratio": None,
             "eye_edge_density": None,
             "eye_dark_ratio": None,
         }
@@ -553,30 +577,46 @@ class ImageQualityGate:
         left_eye = pts_crop[0]
         right_eye = pts_crop[1]
 
-        # --- Маска: skin-tone фракция в нижней зоне лица (нос → подбородок). ---
-        if self.mask_detect_enabled:
-            mouth_dx = float(abs(mouth_r[0] - mouth_l[0]))
-            x_l = int(max(0, min(mouth_l[0], mouth_r[0]) - 0.15 * mouth_dx))
-            x_r = int(min(w, max(mouth_l[0], mouth_r[0]) + 0.15 * mouth_dx))
-            y_top = int(max(0, min(nose[1], h)))
-            y_bot = int(min(h, max(y_top + 1, int(h * 0.95))))
-            if x_r > x_l and y_bot > y_top:
-                region = face_crop[y_top:y_bot, x_l:x_r]
-                if region.size > 0:
-                    hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
-                    h_ch = hsv[:, :, 0]
-                    s_ch = hsv[:, :, 1]
-                    v_ch = hsv[:, :, 2]
-                    skin = (
-                        ((h_ch <= 25) | (h_ch >= 165))
-                        & (s_ch >= 25)
-                        & (s_ch <= 170)
-                        & (v_ch >= 40)
-                    )
-                    frac = float(skin.sum()) / float(region.shape[0] * region.shape[1])
-                    flags["lower_face_skin_frac"] = round(frac, 3)
-                    if frac < self.min_lower_face_skin_frac:
-                        flags["mask_detected"] = True
+        # --- Маска: v_ratio = mean_V(нижняя зона) / median_V(эталон-переносица). ---
+        # Маска затемняет нижнюю зону лица (ткань темнее кожи-эталона) → v_ratio
+        # падает. ОТНОСИТЕЛЬНАЯ яркость: сдвиг света одинаково сдвигает эталон
+        # (переносица, заведомо открыта) и нижнюю зону → ratio сохраняется.
+        # На серии Camera Roll1 (разный свет): clean 0.59-1.11, sunglasses 0.90-2.93,
+        # mask 0.31-0.41 — чёткое разделение, порог 0.50. Прежняя skin-frac (доля
+        # skin-пикселей по H/S) НЕ работала: нижняя зона содержит губы (H красный)
+        # и тени носа → clean разброс 0.0-0.99, перекрытие с mask. v_ratio игнорирует
+        # hue, использует только относительную яркость ткань-маски vs кожа.
+        if self.mask_detect_enabled and min(h, w) >= self.occ_min_face_side:
+            eye_dist_m = float(abs(right_eye[0] - left_eye[0]))
+            # Эталон-зона: переносица (между глазами и носом), ширина = eye-band.
+            x_l_m = int(max(0, min(left_eye[0], right_eye[0]) - 0.10 * eye_dist_m))
+            x_r_m = int(min(w, max(left_eye[0], right_eye[0]) + 0.10 * eye_dist_m))
+            eye_y_m = float((left_eye[1] + right_eye[1]) / 2.0)
+            nose_y_m = float(nose[1])
+            ref_y0 = int(max(0, min(eye_y_m + 0.15 * eye_dist_m, h)))
+            ref_y1 = int(min(h, max(ref_y0 + 1, nose_y_m - 0.05 * eye_dist_m)))
+            ref_v: float | None = None
+            if x_r_m > x_l_m and ref_y1 > ref_y0:
+                ref_region = face_crop[ref_y0:ref_y1, x_l_m:x_r_m]
+                if ref_region.size >= 16:
+                    ref_hsv = cv2.cvtColor(ref_region, cv2.COLOR_BGR2HSV)
+                    ref_v = float(np.median(ref_hsv[:, :, 2]))
+            if ref_v is not None and ref_v > 1e-3:
+                # Проверяемая нижняя зона: нос → низ кадра (ширина mouth ± 0.15).
+                mouth_dx = float(abs(mouth_r[0] - mouth_l[0]))
+                x_l = int(max(0, min(mouth_l[0], mouth_r[0]) - 0.15 * mouth_dx))
+                x_r = int(min(w, max(mouth_l[0], mouth_r[0]) + 0.15 * mouth_dx))
+                y_top = int(max(0, min(nose_y_m, h)))
+                y_bot = int(min(h, max(y_top + 1, int(h * 0.95))))
+                if x_r > x_l and y_bot > y_top:
+                    region = face_crop[y_top:y_bot, x_l:x_r]
+                    if region.size > 0:
+                        low_v = float(cv2.cvtColor(region, cv2.COLOR_BGR2HSV)[:, :, 2].mean())
+                        v_ratio = low_v / ref_v
+                        flags["lower_face_v_ratio"] = round(v_ratio, 3)
+                        if v_ratio < self.min_lower_face_v_ratio:
+                            flags["mask_detected"] = True
+            # else: safe-fail — lower_face_v_ratio остаётся None, mask_detected=False
 
         # --- Очки: энергия градиента (Sobel) в квадратных патчах вокруг глаз. ---
         # Canny с NMS даёт нестабильную долю edge-пикселей; Sobel-magnitude mean
@@ -603,18 +643,25 @@ class ImageQualityGate:
                 if ed > self.max_eye_edge_density:
                     flags["glasses_detected"] = True
 
-        # --- Солнцезащитные очки: затенение глаз относительно подглазной зоны. ---
+        # --- Солнцезащитные очки: eye_dark_ratio (V-ratio глаза/щёки). ---
         # edge-density ловит оправу/линзы по градиенту, но гладкая тёмная линза
-        # без краёв его не триггерит. Тёмное стекло затемняет только глаза; референс
-        # — скуловая зона ПОД глазами (выше рта): всегда внутри bbox детектора (в
-        # отличие от лба, который часто обрезан плотным bbox), не затеняется очками
-        # и не закрывается маской. ratio eye_band_mean / cheek_mean падает на очках.
-        # Робастно к свету: тень/неравномерность обычно сохраняет eyes≈cheeks (ratio
-        # ~1); в темноте всё тёмно (ratio ~1); солнцезащитные линзы → глаза << щёк.
+        # без краёв его не триггерит. Сигнал: eye_V_mean / cheek_V_mean (HSV V) —
+        # тёмная линза затемняет глаза относительно подглазной/скуловой зоны
+        # (внутри bbox, не лоб — он часто обрезан плотным bbox), не затеняется
+        # очками, не закрывается маской. Ниже порога → sunglasses_detected →
+        # retry/remove_occlusion (как маска: «снимите очки»), а не spoof.
+        # Перекалибровано 2026-07-13 на HSV V (консистентно с scripts/diag_occ.py):
+        # clean 0.589-0.883, sunglasses 0.437-0.654, mask 0.655-0.910. Порог 0.60
+        # ловит тёмные и среднепрозрачные очки (≤0.60), пропускает чистые-тени
+        # 0.60-0.883. NOTE: sat_drop (eye_S/cheek_S) опробован и ОТМЕНЁН — на
+        # реальных очках sat_drop>1 (насыщенность глаз не падает), не разделяет.
         if self.dark_eyes_detect_enabled:
-            gray_face = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
-            fh, fw = gray_face.shape[:2]
-            if fh >= 6 and fw >= 6:
+            fh, fw = face_crop.shape[:2]
+            # На мелком кропе eye-band ~5px → eye/cheek ratio шумит и ложится ниже
+            # порога на нормальном лице (без очков). Пропускаем dark-eyes, если
+            # короткая сторона кропа меньше occ_min_face_side (glasses edge-density
+            # остаётся — он робастнее к масштабу).
+            if min(fh, fw) >= self.occ_min_face_side:
                 eye_dist = float(abs(right_eye[0] - left_eye[0]))
                 x_l = int(max(0, min(left_eye[0], right_eye[0]) - 0.10 * eye_dist))
                 x_r = int(min(fw, max(left_eye[0], right_eye[0]) + 0.10 * eye_dist))
@@ -626,13 +673,14 @@ class ImageQualityGate:
                 r0 = max(0, int(eye_y + half * 1.2))
                 r1 = min(fh, int(eye_y + half * 2.0))
                 if x_r > x_l and y1 > y0 and r1 > r0:
-                    eye_band = gray_face[y0:y1, x_l:x_r]
-                    cheek_band = gray_face[r0:r1, x_l:x_r]
+                    hsv_face = cv2.cvtColor(face_crop, cv2.COLOR_BGR2HSV)
+                    eye_band = hsv_face[y0:y1, x_l:x_r]
+                    cheek_band = hsv_face[r0:r1, x_l:x_r]
                     if eye_band.size > 0 and cheek_band.size > 0:
-                        eye_mean = float(eye_band.mean())
-                        cheek_mean = float(cheek_band.mean())
-                        if cheek_mean > 1e-3:
-                            ratio = eye_mean / cheek_mean
+                        eye_v = float(eye_band[:, :, 2].mean())
+                        cheek_v = float(cheek_band[:, :, 2].mean())
+                        if cheek_v > 1e-3:
+                            ratio = eye_v / cheek_v
                             flags["eye_dark_ratio"] = round(ratio, 3)
                             if ratio < self.max_eye_dark_ratio:
                                 flags["sunglasses_detected"] = True

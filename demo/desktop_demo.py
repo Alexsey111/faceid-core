@@ -343,6 +343,19 @@ class CameraThread(threading.Thread):
         if not cap.isOpened():
             self.error = "Камера недоступна (индекс 0). Закройте другие приложения с камерой."
             return
+        # Запросить максимальное поддерживаемое разрешение: default у веб-камер
+        # 640×480 → лицо ~64-108px, borderline occ_min_face_side=64 → ложный
+        # face_too_small + liveness на мелком/мыльном кропе даёт низкий live_score.
+        # 1280×720 (затем 1920×1080) приближает demo к production-камере (1080p+):
+        # лицо ~130-220px, occ/liveness считаются на крупном чётком кропе. Не компенсация
+        # порогов (см. [[no-capture-compensation]]) — лучшее разрешение capture.
+        for w, h in ((1280, 720), (1920, 1080), (640, 480)):
+            cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+            got_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+            got_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+            if got_w >= w - 1 and got_h >= h - 1:
+                break
         while not self._stop.is_set():
             ok, frame = cap.read()
             if ok:
@@ -971,6 +984,15 @@ class DesktopDemoApp(tk.Tk):
             self.verify_btn.configure(text="Переснять")
             self._append_log(f"[verify] retry: {msg} (verification_log не пишется — это не исход)")
             return
+        # quality_reject из-за мелкого лица (hard-минимум occ_min_face_side) →
+        # конкретный оверлей «приблизьтесь», а не общий «плохой кадр».
+        if status == "quality_reject":
+            qd = payload.get("quality_details") or {}
+            if qd.get("quality_warning") == "face_too_small":
+                self._set_overlay("Приблизьтесь — нужен более крупный план", "#e0a93a")
+                self.verify_btn.configure(text="Переснять")
+                self._append_log("[verify] face_too_small: нужен более крупный план")
+                return
         # неуверенная идентификация → предложить/запустить active challenge.
         recommend = bool(payload.get("challenge_recommended"))
         low = payload.get("confidence") == "low" or status == "low_confidence"

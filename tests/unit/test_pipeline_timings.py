@@ -3,9 +3,12 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from app.ml import pipeline_v2
 from app.ml.pipeline_v2 import FacePipelineV2
+
+pytestmark = pytest.mark.unit
 
 
 def test_pipeline_always_returns_canonical_timings(monkeypatch):
@@ -19,6 +22,7 @@ def test_pipeline_always_returns_canonical_timings(monkeypatch):
     pipeline.preprocessor = SimpleNamespace(
         process=lambda image_bytes: image,
         process_image=lambda image_input: image,
+        decode_pair=lambda image_bytes: (image, image),
     )
     pipeline.quality_gate = SimpleNamespace(
         evaluate_image=lambda _: SimpleNamespace(

@@ -57,6 +57,48 @@ def crop_image(image, bbox):
     return image[y1:y2, x1:x2], (x1, y1)
 
 
+def scale_faces_to_original(
+    faces: list[dict],
+    orig_shape: tuple[int, ...],
+    ds_shape: tuple[int, ...],
+) -> list[dict]:
+    """Пересчитать bbox/landmarks лиц из координат downscaled-кадра в координаты original.
+
+    Детекция идёт на downscaled (long-side ≤ max_side, быстро); кроп лица/occ/embedding/
+    liveness берутся из original (full-res, без потери разрешения на 16-МП фото).
+    sx/sy — независимый масштаб по осям (сохраняет пропорции, т.к. resize равномерный,
+    но считаем отдельно для устойчивости к округлению). Возвращает новый список
+    словарей, не мутирует вход.
+    """
+    orig_h, orig_w = orig_shape[:2]
+    ds_h, ds_w = ds_shape[:2]
+    sx = orig_w / float(ds_w)
+    sy = orig_h / float(ds_h)
+    scaled: list[dict] = []
+    for face in faces:
+        x1, y1, x2, y2 = face["bbox"]
+        new_face = dict(face)
+        new_face["bbox"] = [
+            float(x1) * sx,
+            float(y1) * sy,
+            float(x2) * sx,
+            float(y2) * sy,
+        ]
+        landmarks = face.get("landmarks")
+        if landmarks is not None:
+            lm = np.asarray(landmarks, dtype=np.float32).copy()
+            if lm.ndim == 2 and lm.shape[1] >= 2:
+                lm[:, 0] *= sx
+                lm[:, 1] *= sy
+            else:
+                # Плоский [x0,y0,x1,y1,...] — чётные индексы X, нечётные Y.
+                lm[0::2] *= sx
+                lm[1::2] *= sy
+            new_face["landmarks"] = lm
+        scaled.append(new_face)
+    return scaled
+
+
 def _finalize_timings(timings: Dict[str, float]) -> Dict[str, float]:
     finalized = dict(timings)
     finalized["preprocess_ms"] = float(finalized.get("preprocess_ms", 0.0))
@@ -308,11 +350,15 @@ class FacePipelineV2:
         timings: Dict[str, float] = stage_timings.values
 
         t0 = now_perf_ns()
-        image = self.preprocessor.process(image_bytes)
+        # original — full-res (кроп лица/occ/embedding/liveness из него, чтобы не
+        # терять разрешение на 16-МП фото); downscaled ≤ max_side — для быстрой детекции.
+        original, downscaled = self.preprocessor.decode_pair(image_bytes)
         stage_timings.finish("preprocess_ms", t0)
 
         t0 = now_perf_ns()
-        image_quality = self.quality_gate.evaluate_image(image)
+        # Pre-gate (blur/brightness) на downscaled — глобальные метрики не зависят
+        # от разрешения; bbox здесь ещё не нужен.
+        image_quality = self.quality_gate.evaluate_image(downscaled)
         timings["quality_gate_pre_ms"] = (now_perf_ns() - t0) / 1_000_000
 
         if not image_quality.passed:
@@ -327,60 +373,69 @@ class FacePipelineV2:
             }
 
         t0 = now_perf_ns()
-        fast_faces = self.fast_detector.detect(image) or []
+        # Детекция на downscaled (быстро) → пересчёт bbox/landmarks в координаты original.
+        fast_faces_ds = self.fast_detector.detect(downscaled) or []
         detect_ms = stage_timings.finish("detect_ms", t0)
         timings["fast_detect_ms"] = detect_ms
 
-        return self._prepare_face_from_detection(image, image_quality, fast_faces, timings)
+        fast_faces = scale_faces_to_original(
+            fast_faces_ds, original.shape, downscaled.shape
+        )
+        return self._prepare_face_from_detection(
+            original, image_quality, fast_faces, timings
+        )
 
     def prepare_face_inputs(self, image_bytes_list: list[bytes]) -> list[Dict[str, Any]]:
         self._init()
 
         assert self.fast_detector is not None, "detector not initialized"
 
-        images: list[np.ndarray] = []
+        originals: list[np.ndarray] = []
+        downscaleds: list[np.ndarray] = []
         image_qualities: list[Any] = []
         timings_list: list[Dict[str, float]] = []
         results: list[Dict[str, Any]] = []
         eligible_indices: list[int] = []
-        eligible_images: list[np.ndarray] = []
+        eligible_downscaled: list[np.ndarray] = []
 
         for image_bytes in image_bytes_list:
             timings: Dict[str, float] = {}
             t0 = time.time()
-            image = self.preprocessor.process(image_bytes)
+            original, downscaled = self.preprocessor.decode_pair(image_bytes)
             timings["preprocess_ms"] = (time.time() - t0) * 1000
 
             t0 = time.time()
-            image_quality = self.quality_gate.evaluate_image(image)
+            # Pre-gate на downscaled (глобальные метрики).
+            image_quality = self.quality_gate.evaluate_image(downscaled)
             timings["quality_gate_pre_ms"] = (time.time() - t0) * 1000
 
-            images.append(image)
+            originals.append(original)
+            downscaleds.append(downscaled)
             image_qualities.append(image_quality)
             timings_list.append(timings)
             if image_quality.passed:
-                eligible_indices.append(len(images) - 1)
-                eligible_images.append(image)
+                eligible_indices.append(len(originals) - 1)
+                eligible_downscaled.append(downscaled)
 
-        if eligible_images:
+        if eligible_downscaled:
             t0 = time.perf_counter()
-            eligible_fast_faces_list = self.fast_detector.detect_batch(eligible_images)
+            eligible_fast_faces_list = self.fast_detector.detect_batch(eligible_downscaled)
             detect_batch_ms = (time.perf_counter() - t0) * 1000.0
-            per_image_detect_ms = detect_batch_ms / max(1, len(eligible_images))
+            per_image_detect_ms = detect_batch_ms / max(1, len(eligible_downscaled))
         else:
             eligible_fast_faces_list = []
             detect_batch_ms = 0.0
             per_image_detect_ms = 0.0
 
-        if len(eligible_fast_faces_list) != len(eligible_images):
+        if len(eligible_fast_faces_list) != len(eligible_downscaled):
             raise RuntimeError(
                 "detect_batch returned unexpected batch size: "
-                f"{len(eligible_fast_faces_list)} != {len(eligible_images)}"
+                f"{len(eligible_fast_faces_list)} != {len(eligible_downscaled)}"
             )
 
         logger.info(
             "[BATCH DETECT] size=%s detect_batch_ms=%.2f per_image_detect_ms=%.2f",
-            len(eligible_images),
+            len(eligible_downscaled),
             detect_batch_ms,
             per_image_detect_ms,
         )
@@ -390,8 +445,8 @@ class FacePipelineV2:
             for idx, fast_faces in zip(eligible_indices, eligible_fast_faces_list)
         }
 
-        for idx, (image, image_quality, timings) in enumerate(
-            zip(images, image_qualities, timings_list)
+        for idx, (original, downscaled, image_quality, timings) in enumerate(
+            zip(originals, downscaleds, image_qualities, timings_list)
         ):
             if not image_quality.passed:
                 finalized_timings = _finalize_timings(timings)
@@ -410,8 +465,13 @@ class FacePipelineV2:
 
             timings["detect_ms"] = per_image_detect_ms
             timings["detect_batch_ms_total"] = detect_batch_ms
-            fast_faces = eligible_fast_faces_by_index.get(idx, [])
-            result = self._prepare_face_from_detection(image, image_quality, fast_faces, timings)
+            fast_faces_ds = eligible_fast_faces_by_index.get(idx, [])
+            fast_faces = scale_faces_to_original(
+                fast_faces_ds, original.shape, downscaled.shape
+            )
+            result = self._prepare_face_from_detection(
+                original, image_quality, fast_faces, timings
+            )
             _observe_timings(result["timings"])
             results.append(result)
 
@@ -424,47 +484,50 @@ class FacePipelineV2:
 
         image_qualities: list[Any] = []
         timings_list: list[Dict[str, float]] = []
-        processed_images: list[np.ndarray] = []
+        downscaleds: list[np.ndarray] = []
         results: list[Dict[str, Any]] = []
         eligible_indices: list[int] = []
-        eligible_images: list[np.ndarray] = []
+        eligible_downscaled: list[np.ndarray] = []
 
-        for image in images:
+        # images — уже original ndarray (без downscale; worker отдаёт full-res,
+        # чтобы кроп лица/occ/embedding/liveness не теряли разрешение). downscale
+        # здесь нужен только как кадр для быстрой детекции.
+        for original in images:
             timings: Dict[str, float] = {}
             t0 = time.time()
-            processed_image = self.preprocessor.process_image(image)
+            downscaled = self.preprocessor.process_image(original)
             timings["preprocess_ms"] = (time.time() - t0) * 1000
 
             t0 = time.time()
-            image_quality = self.quality_gate.evaluate_image(processed_image)
+            image_quality = self.quality_gate.evaluate_image(downscaled)
             timings["quality_gate_pre_ms"] = (time.time() - t0) * 1000
 
-            processed_images.append(processed_image)
+            downscaleds.append(downscaled)
             image_qualities.append(image_quality)
             timings_list.append(timings)
             if image_quality.passed:
-                eligible_indices.append(len(processed_images) - 1)
-                eligible_images.append(processed_image)
+                eligible_indices.append(len(downscaleds) - 1)
+                eligible_downscaled.append(downscaled)
 
-        if eligible_images:
+        if eligible_downscaled:
             t0 = time.perf_counter()
-            eligible_fast_faces_list = self.fast_detector.detect_batch(eligible_images)
+            eligible_fast_faces_list = self.fast_detector.detect_batch(eligible_downscaled)
             detect_batch_ms = (time.perf_counter() - t0) * 1000.0
-            per_image_detect_ms = detect_batch_ms / max(1, len(eligible_images))
+            per_image_detect_ms = detect_batch_ms / max(1, len(eligible_downscaled))
         else:
             eligible_fast_faces_list = []
             detect_batch_ms = 0.0
             per_image_detect_ms = 0.0
 
-        if len(eligible_fast_faces_list) != len(eligible_images):
+        if len(eligible_fast_faces_list) != len(eligible_downscaled):
             raise RuntimeError(
                 "detect_batch returned unexpected batch size: "
-                f"{len(eligible_fast_faces_list)} != {len(eligible_images)}"
+                f"{len(eligible_fast_faces_list)} != {len(eligible_downscaled)}"
             )
 
         logger.info(
             "[BATCH DETECT] size=%s detect_batch_ms=%.2f per_image_detect_ms=%.2f",
-            len(eligible_images),
+            len(eligible_downscaled),
             detect_batch_ms,
             per_image_detect_ms,
         )
@@ -474,8 +537,8 @@ class FacePipelineV2:
             for idx, fast_faces in zip(eligible_indices, eligible_fast_faces_list)
         }
 
-        for idx, (image, image_quality, timings) in enumerate(
-            zip(processed_images, image_qualities, timings_list)
+        for idx, (original, downscaled, image_quality, timings) in enumerate(
+            zip(images, downscaleds, image_qualities, timings_list)
         ):
             if not image_quality.passed:
                 finalized_timings = _finalize_timings(timings)
@@ -494,8 +557,13 @@ class FacePipelineV2:
 
             timings["detect_ms"] = per_image_detect_ms
             timings["detect_batch_ms_total"] = detect_batch_ms
-            fast_faces = eligible_fast_faces_by_index.get(idx, [])
-            result = self._prepare_face_from_detection(image, image_quality, fast_faces, timings)
+            fast_faces_ds = eligible_fast_faces_by_index.get(idx, [])
+            fast_faces = scale_faces_to_original(
+                fast_faces_ds, original.shape, downscaled.shape
+            )
+            result = self._prepare_face_from_detection(
+                original, image_quality, fast_faces, timings
+            )
             _observe_timings(result["timings"])
             results.append(result)
 

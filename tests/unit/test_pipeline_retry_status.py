@@ -35,6 +35,7 @@ def test_pipeline_remove_occlusion_returns_retry(monkeypatch):
     pipeline.preprocessor = SimpleNamespace(
         process=lambda image_bytes: image,
         process_image=lambda image_input: image,
+        decode_pair=lambda image_bytes: (image, image),
     )
     pipeline.quality_gate = SimpleNamespace(
         evaluate_image=lambda _: SimpleNamespace(
@@ -80,6 +81,7 @@ def test_pipeline_capture_quality_returns_quality_reject(monkeypatch):
     pipeline.preprocessor = SimpleNamespace(
         process=lambda image_bytes: image,
         process_image=lambda image_input: image,
+        decode_pair=lambda image_bytes: (image, image),
     )
     pipeline.quality_gate = SimpleNamespace(
         evaluate_image=lambda _: SimpleNamespace(

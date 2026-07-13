@@ -48,7 +48,7 @@ def _test_redis_client():
 # ------------------------------- helpers --------------------------------
 
 def _valid_jpeg_bytes() -> bytes:
-    """Валидный JPEG 100×100 — _decode_and_downscale_image вернёт ndarray."""
+    """Валидный JPEG 100×100 — _decode_image вернёт ndarray (full-res, без downscale)."""
     arr = np.full((100, 100, 3), 128, dtype=np.uint8)
     ok, buf = cv2.imencode(".jpg", arr)
     assert ok

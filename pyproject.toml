@@ -43,13 +43,14 @@ testpaths = ["tests"]
 # importlib: не препендит test-директории в sys.path → нет затенения исходного
 # пакета `evaluation` тестовым tests/evaluation и нет конфликта одинаковых имён
 # тест-модулей (test_metrics.py в tests/ и tests/evaluation/).
-addopts = "--import-mode=importlib"
+addopts = "--import-mode=importlib -m \"not live\""
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "session"
 asyncio_default_test_loop_scope = "session"
 markers = [
     "timeout: timeout for long-running tests",
-    "integration: реальный Redis/DB/инфра (не чистый unit)"
+    "integration: реальный Redis/DB/инфра (не чистый unit)",
+    "live: smoke-тест против поднятого api-контейнера (localhost:8000); не входит в дефолтный прогон (исключён через addopts -m 'not live')"
 ]
 
 # -------------------------

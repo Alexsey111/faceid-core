@@ -138,26 +138,32 @@ def test_build_metrics_with_explicit_dequeued():
     assert m["dequeue_to_start"] == 2.0   # 13 - 11
 
 
-# ----------------------- _decode_and_downscale_image -----------------------
+# ------------------------------ _decode_image ------------------------------
+# Воркер больше не даунскейлит: pipeline хранит original (кроп лица/occ/embedding/
+# liveness из full-res) и сам даунскейлит только кадр для детекции.
 
 @pytest.mark.unit
-def test_decode_and_downscale_invalid_bytes_returns_none():
-    """Битые байты → cv2.imdecode вернёт None → функция возвращает (None, timings)."""
-    image, timings = vw._decode_and_downscale_image(b"not-an-image")
+def test_decode_image_invalid_bytes_returns_none():
+    """Битые байты → cv2.imdecode вернёт None → (None, timings)."""
+    image, timings = vw._decode_image(b"not-an-image")
     assert image is None
     assert "image_decode_ms" in timings
+    # ключи сохранены как 0.0 — их читают метрики/логи worker-pre stage
+    assert timings["downscale_ms"] == 0.0
+    assert timings["jpeg_reencode_ms"] == 0.0
 
 
 @pytest.mark.unit
-def test_decode_and_downscale_valid_small_image():
-    """Валидное JPEG ≤ MAX_IMAGE_SIDE → декодируется без ресайза."""
+def test_decode_image_keeps_full_resolution():
+    """Валидное JPEG декодируется в full-res, БЕЗ ресайза (крупный кадр не режется)."""
     import cv2
-    arr = np.full((100, 100, 3), 128, dtype=np.uint8)
+    arr = np.full((600, 800, 3), 128, dtype=np.uint8)  # 800px long side (>480)
     ok, buf = cv2.imencode(".jpg", arr)
     assert ok
-    image, timings = vw._decode_and_downscale_image(buf.tobytes())
+    image, timings = vw._decode_image(buf.tobytes())
     assert image is not None
-    assert image.shape == (100, 100, 3)
+    assert image.shape == (600, 800, 3)  # full-res сохранён, downscale не делается
+    assert timings["downscale_ms"] == 0.0
     assert "image_decode_ms" in timings
 
 

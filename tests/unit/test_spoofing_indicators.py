@@ -135,6 +135,7 @@ def _pipeline(monkeypatch, liveness_probs: dict) -> FacePipelineV2:
     pipeline.preprocessor = SimpleNamespace(
         process=lambda _b: image,
         process_image=lambda _i: image,
+        decode_pair=lambda _b: (image, image),
     )
     pipeline.quality_gate = SimpleNamespace(
         evaluate_image=lambda _: SimpleNamespace(
