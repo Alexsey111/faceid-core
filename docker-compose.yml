@@ -1,63 +1,6 @@
 # docker-compose.yml — FaceID Core stack (CPU). GPU-override: docker-compose.gpu.yml.
 # См. docs/deploy-runbook.md.
 
-x-worker-base: &worker-base
-  build:
-    context: .
-    dockerfile: infrastructure/docker/worker.Dockerfile
-  restart: unless-stopped
-  deploy:
-    resources:
-      limits:
-        cpus: "2.0"
-  environment:
-    - ENV=dev
-    - MODELS_DIR=/app/models
-    - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
-    - REDIS_URL=${REDIS_URL:-redis://redis:6379/0}
-    - REDIS_HOST=redis
-    - CELERY_BROKER_URL=redis://redis:6379/0
-    - CELERY_RESULT_BACKEND=redis://redis:6379/0
-    - CELERYD_PREFETCH_MULTIPLIER=1
-    - WORKER_COUNT=8
-    - WORKER_SEMAPHORE=${WORKER_SEMAPHORE:-1}
-    - ASYNC_THROUGHPUT_PER_SEC=${ASYNC_THROUGHPUT_PER_SEC:-12}
-    - BACKPRESSURE_MAX_QUEUE_DELAY_MS=${BACKPRESSURE_MAX_QUEUE_DELAY_MS:-750}
-    - INFLIGHT_LIMIT=${INFLIGHT_LIMIT:-32}
-    - MAX_QUEUE_SIZE=${MAX_QUEUE_SIZE:-16}
-    - EMBED_BATCH_ENABLED=true
-    - EMBED_BATCH_SIZE=2
-    - EMBED_BATCH_TIMEOUT_MS=10
-    - EMBED_BATCH_MAX_WAIT_GUARD_MS=50
-    - LIVENESS_ENABLED=false
-    - FAISS_ENABLED=false
-    - ONNX_INTRA_OP_THREADS=1
-    - ONNX_INTER_OP_THREADS=1
-    # ArcFace-энкодер ONNX-провайдер: auto (CUDA→DML→CPU fallback),
-    # cuda / directml / cpu / csv-список. GPU-override см. docker-compose.gpu.yml.
-    - ONNX_ARCFACE_PROVIDERS=${ONNX_ARCFACE_PROVIDERS:-auto}
-    - MINIO_ENDPOINT=minio:9000
-    - MINIO_ACCESS_KEY=minioadmin
-    - MINIO_SECRET_KEY=minioadmin
-  depends_on:
-    postgres:
-      condition: service_healthy
-    redis:
-      condition: service_healthy
-    minio:
-      condition: service_healthy
-  healthcheck:
-    # Celery-worker liveness-прокси: достижимость брокера Redis.
-    test:
-      [
-        "CMD-SHELL",
-        "python -c \"import os,redis;redis.from_url(os.environ['REDIS_URL']).ping()\" || exit 1",
-      ]
-    interval: 15s
-    timeout: 5s
-    retries: 5
-    start_period: 20s
-
 services:
   postgres:
     image: ankane/pgvector
@@ -144,9 +87,6 @@ services:
       - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/faceid
       - REDIS_URL=redis://redis:6379/0
       - REDIS_HOST=redis
-      - CELERY_BROKER_URL=redis://redis:6379/0
-      - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - CELERYD_PREFETCH_MULTIPLIER=1
       - WORKER_COUNT=8
       - WORKER_SEMAPHORE=${WORKER_SEMAPHORE:-2}
       - ASYNC_THROUGHPUT_PER_SEC=${ASYNC_THROUGHPUT_PER_SEC:-12}
@@ -339,24 +279,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
-
-  worker_fast:
-    <<: *worker-base
-    profiles:
-      - disabled
-    cpus: "2.0"
-    ports:
-      - "9101:9100"
-    command: celery -A app.workers.celery_app worker -Q verify_fast --loglevel=info --concurrency=2 --pool=prefork
-
-  worker_heavy:
-    <<: *worker-base
-    profiles:
-      - disabled
-    cpus: "2.0"
-    ports:
-      - "9102:9100"
-    command: celery -A app.workers.celery_app worker -Q verify_heavy --loglevel=info --concurrency=4 --pool=prefork
 
   prometheus:
     image: prom/prometheus

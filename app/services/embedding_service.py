@@ -82,12 +82,12 @@ class EmbeddingService:
             # не ломаем enroll
             pass
 
-        # In-process FAISS-обновление (audit E3). Раньше звали Celery-таску
-        # add_embedding_task.delay(...) в try/except: pass — при ОТКЛЮЧЁННОМ Celery
-        # (default-deploy) это молча падало → FAISS-индекс НЕ обновлялся на /upload
-        # → устаревал → ложные no_match. Заменено на прямой синхронный вызов:
-        # SearchService.add_embedding сам обёрнут в try/except (не ломает enroll),
-        # add_one на FAISS — C-операция (GIL-release), микросекунды.
+        # In-process FAISS-обновление (audit E3). Раньше для обновления индекса на
+        # /upload звали Celery-таску (delay) в try/except: pass — при ОТКЛЮЧЁННОМ
+        # Celery (default-deploy) это молча падало → FAISS-индекс НЕ обновлялся →
+        # устаревал → ложные no_match. Celery-путь удалён; теперь прямой
+        # синхронный вызов: SearchService.add_embedding сам обёрнут в try/except
+        # (не ломает enroll), add_one на FAISS — C-операция (GIL-release), микросекунды.
         vector = np.asarray(embedding, dtype=np.float32)
         self.search_service.add_embedding(vector, internal_user_id)
 

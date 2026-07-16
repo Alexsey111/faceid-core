@@ -355,11 +355,8 @@ class Settings(BaseSettings):
     WEBHOOK_IDEMPOTENCY_TTL_S: int = 3600
 
     # -------------------------
-    # Celery
+    # Worker (async-native verify_worker; Celery удалён — Волна C)
     # -------------------------
-    CELERY_BROKER_URL: str = "redis://redis:6379/0"
-    CELERY_RESULT_BACKEND: str = "redis://redis:6379/0"
-    CELERY_TASK_QUEUE: str = "faceid"
     WORKER_COUNT: int = 3
     ACTIVE_TASKS_MULTIPLIER: float = 1.25
     ASYNC_THROUGHPUT_PER_SEC: float = 1000.0

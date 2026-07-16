@@ -1,5 +1,5 @@
 # app/ml/liveness/scoring.py — общий scorer liveness для standalone-путей
-# (POST /liveness route и celery task run_liveness).
+# (POST /liveness route).
 #
 # Зеркалит evaluation.liveness.predict.score_frame: downscale (ImagePreprocessor)
 # → RetinaFaceDetector top1 → checker.predict(image, bbox) → решение по порогу.

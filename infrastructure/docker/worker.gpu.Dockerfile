@@ -37,4 +37,4 @@ RUN pip install --no-cache-dir -r requirements-gpu.txt
 COPY app ./app
 COPY models ./models
 
-CMD ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info", "--concurrency=6", "--prefetch-multiplier=1"]
+CMD ["python", "-m", "app.workers.verify_worker"]

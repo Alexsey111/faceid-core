@@ -10,7 +10,6 @@ asyncpg==0.29.0
 pgvector==0.2.5
 
 redis==5.0.4
-celery==5.4.0
 prometheus-client==0.18.0
 
 python-multipart==0.0.9

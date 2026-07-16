@@ -1,4 +1,7 @@
-# worker.Dockerfile — Celery worker (CPU). См. docs/deploy-runbook.md.
+# worker.Dockerfile — verify_worker (CPU, async-native). См. docs/deploy-runbook.md.
+# Celery удалён (Волна C): единый production-путь — app.workers.verify_worker
+# (Redis-очередь, batch, backpressure). Dockerfile default-CMD совпадает с
+# compose `command:` (compose переопределял CMD, но образ должен стартовать сам).
 FROM python:3.11-slim
 
 WORKDIR /app
@@ -19,4 +22,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY models ./models
 
-CMD ["celery", "-A", "app.workers.celery_app", "worker", "--loglevel=info", "--concurrency=6", "--prefetch-multiplier=1"]
+CMD ["python", "-m", "app.workers.verify_worker"]

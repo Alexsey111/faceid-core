@@ -777,5 +777,5 @@ WEBHOOK_QUEUE_DEPTH = _gauge(
 MINIO_DELETE_FAIL_TOTAL = _counter(
     "faceid_minio_delete_fail_total",
     "Failures to delete an original verification image from MinIO",
-    ["stage"],  # verify_task_success / verify_task_failed
+    ["stage"],  # process_batch / stale (verify_worker._cleanup_minio_image)
 )

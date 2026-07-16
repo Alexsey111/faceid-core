@@ -59,6 +59,7 @@ from app.monitoring.metrics import (
     VECTOR_SEARCH_MS,
     VERIFY_REJECTED_JOBS,
     QUEUE_LENGTH_REDIS_SNAPSHOT,
+    MINIO_DELETE_FAIL_TOTAL,
     inc_async_stage_failure,
     observe_async_stage,
     observe_pipeline_stage,
@@ -174,13 +175,16 @@ def _cleanup_minio_image(image_url: str | None, job_id: str, stage: str = "worke
     """Best-effort удаление исходного фото из MinIO после обработки воркером.
 
     Молчит при отсутствии image_url (legacy/битый payload) и при ошибке удаления
-    (MinIO lifecycle-cover — резервная очистка). См. sync-путь verify_task.py.
+    (MinIO lifecycle-cover — резервная очистка). Отказы удаления инкрементим
+    метрикой MINIO_DELETE_FAIL_TOTAL (stage-метка) для observability — раньше
+    это делал только legacy Celery verify_task (удалён), теперь единый путь здесь.
     """
     if not image_url:
         return
     try:
         MinioClient().delete_image(image_url)
     except Exception:
+        MINIO_DELETE_FAIL_TOTAL.labels(stage=stage).inc()
         logger.warning(
             "minio_delete_failed job_id=%s image_url=%s stage=%s",
             job_id, image_url, stage,

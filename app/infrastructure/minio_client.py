@@ -13,8 +13,9 @@ logger = logging.getLogger("minio")
 # обработки; lifecycle-правило ниже — страховка от «забытых» объектов).
 _VERIFY_PREFIX = "verify/"
 # S3 Lifecycle поддерживает только целые дни (нет часовой гранулярности),
-# поэтому backstop = 1 день. Явный delete_image (в verify_task) — основной
-# путь удаления; lifecycle покрывает только случай его провала.
+# поэтому backstop = 1 день. Явный delete_image (в verify_worker,
+# _cleanup_minio_image) — основной путь удаления; lifecycle покрывает только
+# случай его провала.
 _VERIFY_LIFECYCLE_DAYS = 1
 
 

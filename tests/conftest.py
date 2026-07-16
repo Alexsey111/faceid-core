@@ -13,8 +13,6 @@ ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 os.environ["POSTGRES_HOST"] = "localhost"
 os.environ["REDIS_HOST"] = "localhost"
-os.environ["CELERY_BROKER_URL"] = "redis://localhost:6379/0"
-os.environ["CELERY_RESULT_BACKEND"] = "redis://localhost:6379/0"
 os.environ["MINIO_ENDPOINT"] = "localhost:9000"
 os.environ["MODELS_DIR"] = os.path.join(ROOT_DIR, "models")
 os.environ["DATABASE_URL"] = "postgresql+asyncpg://postgres:postgres@localhost:5433/postgres"
@@ -27,8 +25,6 @@ from app.core.config import settings
 settings.FAISS_PERSIST_ENABLED = False
 settings.DB_POOL_SIZE = 1
 settings.DB_MAX_OVERFLOW = 0
-settings.CELERY_BROKER_URL = "redis://localhost:6379/0"
-settings.CELERY_RESULT_BACKEND = "redis://localhost:6379/0"
 settings.MODELS_DIR = os.path.join(ROOT_DIR, "models")
 
 TEST_DB_URL = os.environ["DATABASE_URL"]
