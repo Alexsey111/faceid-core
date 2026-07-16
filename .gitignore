@@ -14,6 +14,7 @@ build/
 .DS_Store
 *.egg-info/
 .env
+.env.prod
 .coverage
 tests/data/
 tests/images/
@@ -75,6 +76,7 @@ summary.json
 # Локальные определения агентов/память/сессии ассистента — не публикуются
 # (создаются через /agents, не запрашивались для шаринга в команде)
 .claude/agents/
+.claude/agent-memory/
 .claude/memory/
 .claude/projects/
 

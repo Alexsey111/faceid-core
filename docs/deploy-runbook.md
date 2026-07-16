@@ -26,8 +26,13 @@ coverage-gate.
   "/CN=localhost"` превращается в Windows-путь и сертификат не генерируется).
 - `DATABASE_URL`, `REDIS_URL`, `MINIO_ACCESS_KEY/SECRET_KEY`, JWT-секрет —
   через `.env` рядом с compose (в `.gitignore`) или переменные окружения оркестратора.
-- Ключ AES-256 для шифрования эмбеддингов — через `ENCRYPTION_KEY` (см.
-  `app/core/config.py`); ротация — отдельная процедура (не в этом runbook).
+- Ключ AES-256 для шифрования эмбеддингов — `BIOMETRY_AES_KEY_B64` (см.
+  `app/core/config.py`). Генерация: `python scripts/gen_aes_key.py`. В production
+  без ключа сервис падает при старте (fail-closed). Ротация — см. секцию 11.
+- **Production-секреты** — `.env.prod` (шаблон `.env.prod.example`, в `.gitignore`):
+  пароль PostgreSQL, креды MinIO, `BIOMETRY_AES_KEY_B64`, `JWT_SECRET`,
+  `SECRET_KEY`, `API_KEYS`. Запуск стека:
+  `docker compose --env-file .env.prod -f docker-compose.yml -f docker-compose.prod.yml up -d --build`.
 
 > **`.env` vs docker-compose**: корневой `.env` (если есть) нацелен на **локальный
 > host-запуск** Python (`REDIS_HOST=localhost`, `DATABASE_URL=...@localhost:5432`).
@@ -275,3 +280,35 @@ print(ort.get_available_providers())
 На CPU-хосте ожидается `CPUExecutionProvider`; на GPU — `CUDAExecutionProvider`
 (+`CPUExecutionProvider` как fallback). Если на GPU-хосте виден только CPU —
 проверить `nvidia-container-toolkit` и `deploy.resources.reservations.devices`.
+
+---
+
+## 11. Backup БД (152-ФЗ)
+
+БД содержит PII (`users.external_id`) и **зашифрованные** эмбеддинги
+(AES-256-GCM, ciphertext — не plaintext-биометрия). Дамп — конфиденциальный
+артефакт: хранить в защищённом месте, ротировать, **не коммитить в git**.
+
+Создание дампа (pg_dump внутри postgres-контейнера, не зависит от pg_dump на
+хосте) + ротация по дням:
+```bash
+bash scripts/backup_db.sh /var/backups/faceid 14   # каталог, хранить 14 дней
+```
+
+Cron (ежедневно 03:17):
+```cron
+17 3 * * * cd /opt/faceid-core && bash scripts/backup_db.sh /var/backups/faceid 14 >> /var/log/faceid-backup.log 2>&1
+```
+
+Восстановление (при пустой БД — сначала `alembic upgrade head`, дамп несёт
+схему, но чистая миграция безопаснее):
+```bash
+gunzip -c /var/backups/faceid/faceid_YYYYMMDD_HHMMSS.sql.gz | \
+  docker compose --env-file .env.prod \
+    -f docker-compose.yml -f docker-compose.prod.yml \
+    exec -T postgres psql -U postgres -d faceid
+```
+
+**Ротация AES-ключа** (`BIOMETRY_AES_KEY_B64`) требует перешифрования всех
+эмбеддингов (decrypt старым → encrypt новым) — процедура в разработке
+(`TODO`); до реализации ключ ротировать нельзя без потери доступа к данным.

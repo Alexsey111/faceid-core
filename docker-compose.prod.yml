@@ -1,0 +1,66 @@
+# docker-compose.prod.yml — production override (security-hardening).
+#
+# Применять вместе с базовым файлом и env-файлом секретов:
+#   docker compose --env-file .env.prod \
+#     -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+#
+# Что делает (закрывает prod-blockers B1/B2/B4 из аудита 2026-07-13):
+#   - ENV=production — включает fail-closed-ветки (BIOMETRY_AES_KEY_B64 обязателен,
+#     иначе RuntimeError при старте; JWT_SECRET-предупреждение при отсутствии);
+#   - LIVENESS_ENABLED=true + LIVENESS_ACTIVE_REQUIRED=true — спуфинг-защита
+#     активна, для допуска требуется active-challenge (physical-spoof cutout/print
+#     отбрасывается challenge-протоколом, а не только passive MiniFASNet);
+#   - QUALITY_GATE_MODE=hard — отбраковка по качеству/окклюзии (soft = warning-only
+#     в dev), пустые/бракованные кропы не доходят до ArcFace;
+#   - FAISS_ENABLED=true — поиск через FAISS-индекс (SearchService);
+#   - AUTH_ENABLED=true — защита эндпоинтов (ТЗ 3.1); API_KEYS/JWT_SECRET из .env.prod;
+#   - пароль PostgreSQL и креды MinIO — из .env.prod (не хардкод postgres/minioadmin);
+#   - секреты (BIOMETRY_AES_KEY_B64, JWT_SECRET, SECRET_KEY, API_KEYS) пробрасываются
+#     в api/worker через env_file=.env.prod (152-ФЗ: ключ шифрования эмбеддингов
+#     вне git).
+#
+# .env.prod НЕ в git (.gitignore). Шаблон: .env.prod.example.
+# Сгенерировать AES-256 ключ: python scripts/gen_aes_key.py
+#
+# Базовый docker-compose.yml НЕ трогается — он остаётся dev/demo (ENV=dev,
+# LIVENESS_ENABLED=false, soft gate, postgres:postgres). Prod-настройки — только
+# здесь, через merge.
+
+services:
+  api:
+    env_file:
+      - .env.prod
+    environment:
+      - ENV=production
+      - LIVENESS_ENABLED=true
+      - LIVENESS_ACTIVE_REQUIRED=true
+      - QUALITY_GATE_MODE=hard
+      - FAISS_ENABLED=true
+      - AUTH_ENABLED=true
+      # DATABASE_URL с паролем из .env.prod (compose --env-file interpolation).
+      # Переопределяет base postgres:postgres, который иначе выиграл бы у env_file.
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/faceid
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD}
+
+  worker:
+    env_file:
+      - .env.prod
+    environment:
+      - ENV=production
+      - LIVENESS_ENABLED=true
+      - LIVENESS_ACTIVE_REQUIRED=true
+      - QUALITY_GATE_MODE=hard
+      - FAISS_ENABLED=true
+      - DATABASE_URL=postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/faceid
+      - MINIO_ACCESS_KEY=${MINIO_ROOT_USER}
+      - MINIO_SECRET_KEY=${MINIO_ROOT_PASSWORD}
+
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+
+  minio:
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
