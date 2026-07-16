@@ -113,8 +113,13 @@ NPCER live при active-gate (FRR живого пользователя, не �
 
 - `evaluation/liveness/combined.py` — pure-логика (aggregate, active-gate, eval_combined).
 - `evaluation/liveness/run_combined_eval.py` — CLI из кеша → JSON-отчёт.
-- `evaluation/liveness/out/liveness_combined_report.json` — последний замер.
+- `evaluation/liveness/out/liveness_combined_report.json` — последний замер
+  (перегенерирован 2026-07-13: APCER=0, NPCER=0.0556, ACER=0.0278, AUC=1.0 @ thr=0.859).
 - `tests/unit/test_liveness_combined.py` — 10 unit-тестов pure-логики.
+
+**Датасет — собственный «Anti-Spoofing Dataset» (45 video-сэмплов, 9 сессий), НЕ
+CASIA-FASD** (в проекте нет CASIA-FASD-датасета/скриптов). Малая выборка — caveat
+зафиксирован выше; бóльший multi-session video-датасет — future work.
 
 Запуск:
 ```bash

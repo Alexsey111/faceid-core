@@ -22,7 +22,10 @@ from evaluation.metrics import (
 from evaluation.pairs import build_pairs_1to1, gallery_probe_split, pair_scores
 
 # Оперативные пороги пайплайна (app/core.config) — для сравнения в отчёте.
-CURRENT_HIGH_THRESHOLD = 0.60
+# Держать синхронно с app/core/config.py: FACE_MATCH_THRESHOLD / FACE_LOW_THRESHOLD
+# / FACE_MARGIN_THRESHOLD. evaluation/ — чистый harness без импорта app, поэтому
+# хардкод (не pydantic-settings); при смене порога в config — обновить здесь.
+CURRENT_HIGH_THRESHOLD = 0.45
 CURRENT_LOW_THRESHOLD = 0.30
 CURRENT_MARGIN_THRESHOLD = 0.10
 TARGET_FAR = 0.001

@@ -118,3 +118,32 @@ Grafana/LB) реализована ранее (roadmap нед.3-4). Докуме
   zero-downtime rolling).
 - **Alerting rules** — рекомендация; конкретные thresholds калибруются под
   реальную нагрузку после нагрузочного теста (roadmap день 26-27, 100 RPS).
+
+## Нагрузочный тест (Волна 0.4)
+
+`scripts/load_test_locust.py` — locust-скрипт для проверки SLO throughput/latency.
+
+Два режима (теги):
+- `@tag("e2e")` (default): `POST /verify_base64` → long-poll
+  `/api/v1/jobs/{job_id}/wait?timeout=2000` до терминала. Измеряет **end-to-end**
+  p95 (full latency: queue + worker ML + roundtrip) — реальный SLO-критерий.
+- `@tag("enqueue")`: только `POST /verify_base64` (pending), без поллинга.
+  Измеряет RPS приёма / queue backpressure (не ML-throughput).
+
+Запуск 100 RPS, 2 мин:
+```bash
+AUTH_ENABLED=false docker compose up -d --build api worker postgres redis minio
+PYTHONUTF8=1 locust -f scripts/load_test_locust.py --host http://localhost:8000 \
+    --headless -u 100 -r 100 -t 120s --tags e2e \
+    --html=benchmarks/locust_e2e_100rps.html
+```
+
+- `-u 100 -r 100` + `constant_pacing(1.0)` → 100 RPS целевой (если backend держит).
+- Образ: `tests/data/person1_small.jpg` (артефакт репо, не биометрия; 152-ФЗ).
+- Auth: `AUTH_ENABLED=false` на dev (как `tests/conftest.py:23`), либо `API_KEY=...`
+  (X-API-Key из `settings.API_KEYS`).
+- `PYTHONUTF8=1` обязателен на Windows — `pyproject.toml` содержит кириллицу,
+  locust парсит его через charmap.
+- ТЗ-таргеты: **p95 < 500ms**, **throughput ≥50 req/sec** (1 GPU), **error < 0.5%**.
+  На dev-CPU p95 превысит — это dev-ограничение (см. caveat выше), не SLO-брак.
+  Базовым результатом фиксируется CPU-baseline; SLO-валидация — на production GPU-deploy.

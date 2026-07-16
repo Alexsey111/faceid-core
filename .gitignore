@@ -72,6 +72,18 @@ summary.json
 # Локальные настройки Claude Code (permissions и т.п. — не коммитятся)
 # settings.json (shared) может коммититься; settings.local.json — нет
 .claude/settings.local.json
+# Локальные определения агентов/память/сессии ассистента — не публикуются
+# (создаются через /agents, не запрашивались для шаринга в команде)
+.claude/agents/
+.claude/memory/
+.claude/projects/
+
+# 152-ФЗ: реальные фото лиц (биометрия) из локальных камер — НЕ коммитить.
+# Папки Camera Roll/ экспортируются Windows-камерой и содержат ПДн.
+Camera Roll/
+Camera Roll*/
+*.Pro.jpg
+*.Pro.png
 
 # Локальная инструкция ассистента (не публикуется)
 CLAUDE.md

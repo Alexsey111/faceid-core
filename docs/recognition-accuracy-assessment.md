@@ -37,39 +37,53 @@ FRR на single-single (1958 genuine / 1969 impostor) при фиксирова�
 
 | Порог | FRR | FAR | ТЗ FRR≤3% | Контекст |
 |---|---|---|---|---|
-| **0.6** (`FACE_MATCH_THRESHOLD`, production default) | **22.17%** | 0.000% | ❌ | безопасный режим (FAR=0), ценой высокого FRR |
+| **0.45** (`FACE_MATCH_THRESHOLD`, production default) | **2.71%** | 0.000% | ✅ | operating point: FAR=0≤0.1%, FRR≤3% |
+| 0.2634 (thr @ FAR=0.001) | 0.36% | 0.000% | ✅ | точка TAR-цели; лучше UX, но без запаса по FAR для прода |
 | 0.5 | 5.46% | 0.000% | ❌ | |
-| **0.45** | **2.71%** | 0.000% | ✅ | ТЗ-FRR-режим, FAR на LFW = 0 |
-| 0.4 | 1.17% | 0.000% | ✅ | |
-| thr @ FAR=0.001 (=TAR 0.9964) | 0.36% | 0.1% | ✅ | точка TAR-цели |
+| 0.6 | 22.17% | 0.000% | ❌ | high-security override (FAR=0), ценой FRR 22% |
+| **0.73** | **69.10%** | 0.000% | ❌ | ⚠️ КРИТИЧНО — бракует 69% своих (см. ниже) |
 
-**Вывод по FRR:** ТЗ FRR≤3% **достигается при калиброванном пороге `FACE_MATCH_THRESHOLD`≈0.45**
-(FRR 2.71%, FAR 0) или при пороге из точки TAR@FAR=0.001 (FRR 0.36%). НО
-**production default `FACE_MATCH_THRESHOLD=0.6` даёт FRR=22%** — это безопасный
-режим (FAR=0, ни одного пропущенного impostor), но ценой отказа каждому 5-му
-легитимному пользователю.
+**Вывод по FRR:** ТЗ FRR≤3% **достигается при калиброванном пороге `FACE_MATCH_THRESHOLD`=0.45**
+(FRR 2.71%, FAR=0). Operating point под чистую FAR≤0.1% = 0.2634 (FRR 0.36%) даёт
+лучший UX, но **не применяется**: безопасность-приоритет (СКУД) требует запас против
+FAR на проде, плюс LFW переоценивает cosine same-person → реальный FRR при 0.2634
+выше 0.36%. 0.45 — сбалансированный operating point с FAR=0 и малым margin до 3%.
 
-Это **trade-off порога, не дефицит модели**: одна и та же модель на одном датасете
-даёт FRR 22% @ thr 0.6 и FRR 0.36% @ thr TAR-точки. Выбор порога = policy-решение
-оператора в зависимости от приоритета security (низкий FAR / высокий FRR, thr 0.6)
-vs usability (ТЗ-FRR ≤3%, thr ≈0.45).
+### Решение (2026-07-13, перекалибровка)
 
-### Решение (2026-07-07)
+**Default `FACE_MATCH_THRESHOLD` / `HIGH_THRESHOLD` = 0.45** (`app/core/config.py`)
+— соответствует ТЗ (FAR=0≤0.1%, FRR 2.71%≤3% на LFW single-face).
+`LOW_THRESHOLD=0.30` (no_match); low_confidence band [0.30, 0.45)
+→ `challenge_recommended` (active liveness), не hard-reject.
 
-**Default `FACE_MATCH_THRESHOLD` / `HIGH_THRESHOLD` калиброваны к 0.45**
-(`app/core/config.py`) — соответствует ТЗ FRR≤3% (FRR 2.71%, FAR=0 на LFW
-single-face). `LOW_THRESHOLD=0.30` (no_match); low_confidence band [0.30, 0.45)
-→ `challenge_recommended` (active liveness), не hard-reject — реальный hard-FRR
-(no_match) = 0.46%.
+**Калибровка:** `scripts/calibrate_face_threshold.py` — извлекает operating point
+под целевой FAR и печатает FAR/FRR/TAR на наборе порогов-кандидатов (включая
+текущие config/.env). LFW-скрипты выбрасывают порог из `tar_at_far`; калибровщик
+сохраняет 2-й возврат + `recommend_thresholds`.
 
-Прежнее 0.6 оставлено как high-security override через env
-(`FACE_MATCH_THRESHOLD=0.6`) — zero-impostor-accept ценой FRR 22%.
+**⚠️ Критическая находка (2026-07-13):** локальный `.env` содержал
+`FACE_MATCH_THRESHOLD=0.73` (и `FACE_LOW_THRESHOLD=0.60`) — это даёт **FRR=69.1%**
+на LFW: бракует ~69% легитимных пользователей. На dev-серии Camera Roll маскировалось
+(крупные качественные кропы одного лица дают cosine >0.73 с самим собой), но в проде
+с разной позой/светом/камерой 0.73 забракует большинство своих. **Исправлено в .env →
+0.45 / 0.30.** Никогда не поднимать порог выше 0.45 без реал-валидации на целевых парах.
 
-Калибровка под production-dataset (не LFW) обязательна — LFW-числа = reference,
-не абсолют. `FACE_MATCH_THRESHOLD` вынесен в env именно для этого.
+`evaluation/protocols.py:CURRENT_HIGH_THRESHOLD` выровнен к 0.45 (был хардкод 0.60,
+рассинхрон с config).
+
+### Оговорка: LFW ≠ СКУД
+
+Калибровка на LFW-pairs — **верхняя оценка**. LFW-pairs = «две фото одного/разных»
+(похожие условия). Production (СКУД) = эталон при регистрации + кадр с камеры при
+проходе (иная поза/свет/возраст/камера) → cosine same-person НИЖЕ → **реальный FRR
+в проде выше** LFW-чисел. 0.45 имеет малый margin до 3% — реал-валидация на целевых
+парах (когда появятся данные) обязательна, порог может потребовать опускания.
+`FACE_MATCH_THRESHOLD` вынесен в env именно для этого.
 
 ## Связанные артефакты
 
+- `scripts/calibrate_face_threshold.py` — калибровка operating point под целевой
+  FAR (FAR/FRR/TAR на наборе порогов, извлечение thr из tar_at_far).
 - `evaluation/lfw/run_single_face_eval.py` — single-face subset eval.
 - `evaluation/lfw/out/lfw_single_face_report.json` — proof (TAR/AUC/EER по срезам).
 - `evaluation/lfw/run_lfw.py` — full-LFW eval harness (кеш эмбеддингов).
