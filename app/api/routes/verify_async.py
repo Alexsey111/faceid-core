@@ -16,7 +16,7 @@ import numpy as np
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 
-from app.api._helpers import get_request_id
+from app.api._helpers import get_request_id, extract_client_ip
 from app.core.config import settings
 from app.core.timing import StageTimings, elapsed_ms, now_epoch_ns, now_perf_ns
 from app.infrastructure.minio_client import MinioClient
@@ -239,6 +239,9 @@ async def verify_async(http_request: Request):
     started_total = perf_counter()
     route = VERIFY_ROUTE
     request_id = get_request_id(http_request)
+    # Клиентский IP для audit-log в verification_logs (audit E2). Пробрасывается
+    # в worker через job-payload — worker restore в contextvar перед create_log.
+    client_ip = extract_client_ip(http_request)
     job_id: str | None = None
     current_stage = "request_parse"
 
@@ -485,6 +488,7 @@ async def verify_async(http_request: Request):
             "accepted_at_ns": accepted_at_ns,
             "enqueued_at_ns": enqueued_at_ns,
             "trace_id": request_id,
+            "request_ip": client_ip,
         }
 
         with _observe_admission_stage("enqueue"):

@@ -3,6 +3,7 @@ from typing import Optional
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.request_context import get_client_ip
 from app.models.verification_log import VerificationLog
 from app.monitoring.db_metrics import timed_db_call
 
@@ -20,9 +21,15 @@ class VerificationRepository:
         liveness_score: float | None = None,
         is_genuine: bool | None = None,
         commit: bool = True,
+        request_ip: str | None = ...,  # sentinel: None-явное vs auto-from-contextvar
     ) -> Optional[VerificationLog]:
         if user_id is None:
             return None
+
+        # request_ip: явный параметр приоритетнее; иначе из contextvar (middleware
+        # ставит для sync-пути, worker — restore из job-payload). audit E2.
+        if request_ip is ...:
+            request_ip = get_client_ip()
 
         record = VerificationLog(
             user_id=user_id,
@@ -31,6 +38,7 @@ class VerificationRepository:
             liveness_score=liveness_score,
             is_genuine=is_genuine,
             result=success,
+            request_ip=request_ip,
         )
 
         self.db.add(record)

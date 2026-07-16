@@ -18,6 +18,7 @@ from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.db.repositories.verification_repo import VerificationRepository
 from app.core.config import settings
 from app.core.logger import setup_logging
+from app.core.request_context import reset_client_ip, set_client_ip
 from app.db.session import AsyncSessionLocal
 from app.infrastructure.minio_client import MinioClient
 from app.monitoring.metrics import (
@@ -1652,6 +1653,10 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                 try:
                     processing_started_at_ns = now_epoch_ns()
                     t_verify = perf_counter()
+                    # Клиентский IP из job-payload → contextvar, чтобы create_log
+                    # (внутри service) записал request_ip в verification_logs
+                    # (audit E2). Reset в finally — не утекает в следующий job.
+                    ip_token = set_client_ip(payload.get("request_ip"))
                     result = await service.verify_from_pipeline_result(
                         prepared,
                         image_bytes=original_image_bytes,
@@ -1791,6 +1796,8 @@ async def process_batch(job_datas: list[dict[str, Any]]):
                         quality_details=prepared.get("quality_details", {}),
                         trace_id=_trace_id_from_job_data(item),
                     )
+                finally:
+                    reset_client_ip(ip_token)
 
             t_commit = perf_counter()
             await db.commit()

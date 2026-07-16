@@ -52,3 +52,32 @@ def get_request_id(request: Request) -> str:
     except Exception:
         pass
     return request_id
+
+
+def extract_client_ip(request: Request) -> str | None:
+    """Извлечь реальный клиентский IP из заголовков reverse-proxy/LB.
+
+    За nginx (api_lb) request.client.host — это IP прокси. Сначала X-Real-IP
+    (nginx ставит), затем первая запись X-Forwarded-For, затем fallback
+    request.client.host. Тот же паттерн, что в rate_limiter.py:40-44 (DRY).
+
+    Робастна к mock-объектам в тестах (SimpleNamespace без .headers/.client) —
+    getattr-проверки как в get_request_id. Возвращает None, если заголовков нет.
+    """
+    headers = getattr(request, "headers", None)
+    client_ip: str | None = None
+    if headers is not None:
+        client_ip = headers.get("X-Real-IP")
+        if not client_ip:
+            forwarded = headers.get("X-Forwarded-For")
+            if forwarded:
+                client_ip = forwarded.split(",")[0].strip()
+    if not client_ip:
+        # fallback на transport-IP (для dev без proxy = реальный клиент;
+        # за proxy = IP прокси, что хуже, но лучше чем None).
+        client = getattr(request, "client", None)
+        if client is not None:
+            host = getattr(client, "host", None)
+            if host:
+                client_ip = host
+    return client_ip or None

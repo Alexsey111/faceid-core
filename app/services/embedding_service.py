@@ -1,5 +1,6 @@
 ﻿# app/services/embedding_service.py - Сервис эмбеддингов
 
+import asyncio
 from typing import Dict, Any, Optional
 
 import numpy as np
@@ -8,7 +9,6 @@ from app.services.verification_service_factory import get_pipeline
 from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.db.repositories.user_repo import UserRepository
 from app.services.search_service import SearchService
-from app.workers.tasks.faiss_tasks import add_embedding_task
 
 
 class EmbeddingService:
@@ -46,7 +46,10 @@ class EmbeddingService:
             except (ValueError, TypeError):
                 internal_user_id = user_id  # type: ignore[assignment]
 
-        result = self.pipeline.process(image_bytes)
+        # pipeline.process — тяжёлый ML-инференс (детект+encode). В async-контексте
+        # /upload обернуть в executor, иначе блокируется event loop (audit E1 —
+        # parity с /verify_face → _verify_face_impl, который тоже в to_thread).
+        result = await asyncio.to_thread(self.pipeline.process, image_bytes)
 
         # Pipeline может вернуть не-"ok" status (quality_reject/retry/no_face/spoof) —
         # в этих случаях ключа "embedding" нет. Раньше падало KeyError → HTTP 500.
@@ -79,12 +82,14 @@ class EmbeddingService:
             # не ломаем enroll
             pass
 
-        try:
-            vector = np.asarray(embedding, dtype=np.float32)
-            add_embedding_task.delay(vector.tolist(), internal_user_id)
-        except Exception:
-            # не ломаем enroll
-            pass
+        # In-process FAISS-обновление (audit E3). Раньше звали Celery-таску
+        # add_embedding_task.delay(...) в try/except: pass — при ОТКЛЮЧЁННОМ Celery
+        # (default-deploy) это молча падало → FAISS-индекс НЕ обновлялся на /upload
+        # → устаревал → ложные no_match. Заменено на прямой синхронный вызов:
+        # SearchService.add_embedding сам обёрнут в try/except (не ломает enroll),
+        # add_one на FAISS — C-операция (GIL-release), микросекунды.
+        vector = np.asarray(embedding, dtype=np.float32)
+        self.search_service.add_embedding(vector, internal_user_id)
 
         return {
             "embedding_id": record.id,
