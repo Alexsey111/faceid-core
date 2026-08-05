@@ -55,7 +55,8 @@ def try_reserve_slot(max_queue_delay_ms: float = 2000.0) -> bool:
     estimated_queue_delay_ms = estimate_queue_delay_ms(in_system)
     hard_limit = settings.MAX_ACTIVE_TASKS
     logger.info(
-        "[BP] try_reserve in_system=%s hard_limit=%s throughput_per_sec=%.3f estimated_queue_delay_ms=%.3f max_queue_delay_ms=%.3f",
+        "[BP] try_reserve in_system=%s hard_limit=%s throughput_per_sec=%.3f "
+        "estimated_queue_delay_ms=%.3f max_queue_delay_ms=%.3f",
         in_system,
         hard_limit,
         settings.ASYNC_THROUGHPUT_PER_SEC,

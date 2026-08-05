@@ -14,14 +14,14 @@ class CalibrationService:
         """
         tp = fp = tn = fn = 0
 
-        for s, l in zip(scores, labels):
-            pred = 1 if s >= threshold else 0
+        for score, label in zip(scores, labels):
+            pred = 1 if score >= threshold else 0
 
-            if pred == 1 and l == 1:
+            if pred == 1 and label == 1:
                 tp += 1
-            elif pred == 1 and l == 0:
+            elif pred == 1 and label == 0:
                 fp += 1
-            elif pred == 0 and l == 0:
+            elif pred == 0 and label == 0:
                 tn += 1
             else:
                 fn += 1

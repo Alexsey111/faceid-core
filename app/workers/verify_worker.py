@@ -13,7 +13,7 @@ import numpy as np
 
 import redis
 
-from app.core.timing import StageTimings, elapsed_ms, now_epoch_ns, now_perf_ns
+from app.core.timing import StageTimings, now_epoch_ns
 from app.db.repositories.embedding_repo import EmbeddingRepository
 from app.db.repositories.verification_repo import VerificationRepository
 from app.core.config import settings
@@ -1071,8 +1071,9 @@ async def process_batch(job_datas: list[dict[str, Any]]):
     WORKER_ACTIVE_BATCHES.inc()
     prepared_jobs: list[dict[str, Any]] = []
     batch_candidates: list[dict[str, Any]] = []
-    batch_collected_at = float(job_datas[0].get("batch_collected_at", batch_started_at)) if job_datas else batch_started_at
-    first_claim_at = float(job_datas[0].get("first_claim_at", batch_collected_at)) if job_datas else batch_collected_at
+    batch_collected_at = (
+        float(job_datas[0].get("batch_collected_at", batch_started_at)) if job_datas else batch_started_at
+    )
     try:
 
         for job_data in job_datas:

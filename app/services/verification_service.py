@@ -875,7 +875,8 @@ class VerificationService:
         _observe_verify_latency(t_start)
 
         logger.warning(
-            "verify_service_times job_id=%s anti_replay_ms=%.3f is_genuine_ms=%.3f decision_ms=%.3f verification_log_write_ms=%.3f search_ms=%.3f",
+            "verify_service_times job_id=%s anti_replay_ms=%.3f is_genuine_ms=%.3f "
+            "decision_ms=%.3f verification_log_write_ms=%.3f search_ms=%.3f",
             job_id,
             float(pipeline_time.get("anti_replay_ms", 0.0)),
             float(pipeline_time.get("is_genuine_ms", 0.0)),

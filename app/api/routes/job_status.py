@@ -103,7 +103,9 @@ def _extract_async_job_metrics(result: dict) -> dict[str, float | None]:
             "async_job_queue_delay_ms": queue_delay_ms,
             "async_job_processing_ms": processing_ms,
             "job_created_at": ns_to_s(timestamps.get("accepted_at_ns")) if isinstance(timestamps, dict) else None,
-            "job_started_at": ns_to_s(timestamps.get("processing_started_at_ns")) if isinstance(timestamps, dict) else None,
+            "job_started_at": (
+                ns_to_s(timestamps.get("processing_started_at_ns")) if isinstance(timestamps, dict) else None
+            ),
             "job_done_at": ns_to_s(timestamps.get("result_written_at_ns")) if isinstance(timestamps, dict) else None,
         }
 

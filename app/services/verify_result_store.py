@@ -161,7 +161,9 @@ class VerifyResultStore:
         VERIFY_RESULT_WRITE_MS.observe((perf_counter() - start) * 1000.0)
         VERIFY_RESULT_VISIBLE_TOTAL.labels(status="done").inc()
         completed_at = technical_timestamps.get("completed_at_ms") if isinstance(technical_timestamps, dict) else None
-        result_visible_at = technical_timestamps.get("result_visible_at_ms") if isinstance(technical_timestamps, dict) else None
+        result_visible_at = (
+            technical_timestamps.get("result_visible_at_ms") if isinstance(technical_timestamps, dict) else None
+        )
         if completed_at is not None and result_visible_at is not None:
             try:
                 VERIFY_RESULT_VISIBLE_LAG_MS.observe(max(0.0, float(result_visible_at) - float(completed_at)))
@@ -194,7 +196,9 @@ class VerifyResultStore:
         VERIFY_RESULT_WRITE_MS.observe((perf_counter() - start) * 1000.0)
         VERIFY_RESULT_VISIBLE_TOTAL.labels(status="error").inc()
         completed_at = technical_timestamps.get("completed_at_ms") if isinstance(technical_timestamps, dict) else None
-        result_visible_at = technical_timestamps.get("result_visible_at_ms") if isinstance(technical_timestamps, dict) else None
+        result_visible_at = (
+            technical_timestamps.get("result_visible_at_ms") if isinstance(technical_timestamps, dict) else None
+        )
         if completed_at is not None and result_visible_at is not None:
             try:
                 VERIFY_RESULT_VISIBLE_LAG_MS.observe(max(0.0, float(result_visible_at) - float(completed_at)))
@@ -226,7 +230,9 @@ class VerifyResultStore:
         VERIFY_RESULT_WRITE_MS.observe((perf_counter() - start) * 1000.0)
         VERIFY_RESULT_VISIBLE_TOTAL.labels(status="expired").inc()
         completed_at = technical_timestamps.get("completed_at_ms") if isinstance(technical_timestamps, dict) else None
-        result_visible_at = technical_timestamps.get("result_visible_at_ms") if isinstance(technical_timestamps, dict) else None
+        result_visible_at = (
+            technical_timestamps.get("result_visible_at_ms") if isinstance(technical_timestamps, dict) else None
+        )
         if completed_at is not None and result_visible_at is not None:
             try:
                 VERIFY_RESULT_VISIBLE_LAG_MS.observe(max(0.0, float(result_visible_at) - float(completed_at)))

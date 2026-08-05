@@ -3,6 +3,7 @@
 import asyncio
 import os
 import subprocess
+import sys
 
 import pytest
 import pytest_asyncio
@@ -52,7 +53,17 @@ def _all_unit(session) -> bool:
     items = getattr(session, "items", None)
     if not items:
         return False
-    return all(item.get_closest_marker("unit") is not None for item in items)
+    return all(
+        _is_unit_item(item)
+        for item in items
+    )
+
+
+def _is_unit_item(item) -> bool:
+    return (
+        item.get_closest_marker("unit") is not None
+        or "/tests/unit/" in str(item.path).replace("\\", "/")
+    )
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -61,12 +72,12 @@ def run_migrations(request):
     # чтобы юнит-тесты работали без поднятого Postgres.
     if _all_unit(request.session):
         return
-    subprocess.run(["alembic", "upgrade", "head"], check=True, cwd=ROOT_DIR)
+    subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], check=True, cwd=ROOT_DIR)
 
 
 @pytest.fixture(autouse=True)
 def reset_redis(request):
-    if request.node.get_closest_marker("unit") is not None:
+    if _is_unit_item(request.node):
         yield
         return
     client = redis_lib.Redis(host="localhost", port=6379, db=0)
@@ -83,7 +94,7 @@ def disable_quality_gate_nonunit(request):
     test_upload_validation/test_pipeline_* и gate-логику тестируют сами).
     Выставляем ДО первого pipeline.process() — pipeline читает
     settings.QUALITY_GATE_MODE в _init (lazy)."""
-    if request.node.get_closest_marker("unit") is not None:
+    if _is_unit_item(request.node):
         yield
         return
     prev = settings.QUALITY_GATE_MODE

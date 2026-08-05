@@ -242,6 +242,20 @@ Cutout/print — статичны, действия не выполняют → 
 
 ## Deploy
 
+### Локальная установка
+
+Для запуска вне Docker нужен Python 3.11. Зависимости зафиксированы в
+[`requirements.txt`](requirements.txt):
+
+```bash
+python -m venv .venv
+.venv\\Scripts\\python -m pip install -r requirements.txt  # Windows
+# .venv/bin/python -m pip install -r requirements.txt       # Linux/macOS
+```
+
+Конфигурацию для локального запуска возьмите из `.env.prod.example`; секреты и
+ключи не добавляйте в репозиторий.
+
 ### CPU (dev / production без GPU)
 
 ```bash
@@ -297,7 +311,7 @@ Production: убрать mount `/demo` или защитить auth+HTTPS. См.
 
 ```bash
 # unit-набор (без DB/Redis)
-python -m pytest tests/ -m unit -q
+python -m pytest tests/unit -q
 
 # полный suite (unit + integration; требует postgres_test/redis)
 python -m pytest -q
